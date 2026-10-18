@@ -122,7 +122,8 @@ public final class QueryService {
     }
 
     private RewardStatus rewardStatus(CoinOperation o, Instant now) {
-        String status = switch (o.status) {
+        // a held part is never paid yet, so the reward as a whole is delayed
+        String status = o.heldAmount > 0 ? "delayed" : switch (o.status) {
             case SUCCEEDED -> "succeeded";
             case HELD, NEEDS_REVIEW, UNKNOWN -> "delayed";
             case FAILED -> "delayed";

@@ -93,7 +93,7 @@ public final class SettlementService {
      * Writes a reward credit into the ledger against the run's start-day cap (R-47, F-03). The part above the cap is
      * held (operation status HELD / held_amount) and raises an alert; nothing above the cap is ever sent to the wallet.
      */
-    CoinOperation createCredit(Run run, OperationType type, int amount, Instant now) {
+    public CoinOperation createCredit(Run run, OperationType type, int amount, Instant now) {
         LocalDate capDay = run.startBusinessDate;
         int cap = ctx.ledger().capHighWater(capDay, ctx.config(run.configVersion).dailyAccountCap(), now);
         DailyCredit dc = ctx.ledger().lockDailyCredit(run.userId, capDay);

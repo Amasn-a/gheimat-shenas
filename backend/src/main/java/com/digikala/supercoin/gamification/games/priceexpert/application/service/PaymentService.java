@@ -118,6 +118,11 @@ public final class PaymentService {
             if (op.status == OperationStatus.SUCCEEDED || op.status == OperationStatus.FAILED || op.status == OperationStatus.NEEDS_REVIEW) return;
             Offer offer = ctx.runs().lockOffer(op.offerId).orElseThrow();
             if (r.providerRef() != null) op.providerRef = r.providerRef();
+            // The offer deadline is decided first: at or after it the offer is over (R-43), whatever the outcome says.
+            if (run.state == RunState.PAYMENT_PENDING && !offer.openAt(now)) {
+                settlement.finish(run, player, FinishReason.continue_failed, offer.deadline);
+                offer = ctx.runs().lockOffer(op.offerId).orElseThrow();
+            }
 
             switch (r.outcome()) {
                 case SUCCEEDED -> {
