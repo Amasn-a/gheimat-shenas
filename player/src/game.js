@@ -154,7 +154,8 @@ function shareSheet() {
 
 export function render() {
   if (!root) return;
-  const ms = S.ui.morph != null ? S.ui.morph : motion.running() ? Math.max(160, motion.remaining()) : 0;
+  // access/error screens (G11) replace the game at once: no ghosts of an interrupted card move behind their message
+  const ms = S.view.startsWith('G11.') ? 0 : S.ui.morph != null ? S.ui.morph : motion.running() ? Math.max(160, motion.remaining()) : 0;
   S.ui.morph = null;
   const before = ms && !motion.reducedMotion() ? motion.snapshot(root) : null;
   const sc = root.querySelector('[data-scroll]'), keep = sc && [sc.dataset.scroll, sc.scrollTop];
@@ -299,7 +300,13 @@ export async function resume(runId) {
 function applyRun(run, context) {
   const prev = S.run;
   S.run = run; S.ref = run.reference;
-  if (run.state === 'FINISHED') return finished(run);
+  if (run.state === 'FINISHED') {
+    // the offer ended while a payment was unresolved: show what happened to the payment before the result (G06.FAILED_END*, R-43)
+    if (S.op && S.op.operationId && run.finishReason === 'continue_failed' && ['G06.PENDING', 'G06.UNKNOWN'].includes(S.view))
+      return api.operation(S.op.operationId).then(o => onOperation(o, true)).catch(() => finished(run));
+    if (S.view.startsWith('G06.FAILED_END') || S.view === 'G06.REFUNDED') return render();   // the sheet's «دیدن نتیجه» leads on
+    return finished(run);
+  }
   if (run.state === 'READY') {
     if (['G03.CORRECT_FEEDBACK'].includes(S.view) && context !== 'resume') return;   // the promotion will land here anyway
     S.q = null; S.fb = null; S.offer = null; S.op = null;
@@ -488,7 +495,7 @@ export async function continueOffer() {
   }
 }
 
-function onOperation(opv) {
+function onOperation(opv, fromPoll = false) {
   const op = S.op || {};
   Object.assign(op, { operationId: opv.operationId, status: opv.status, chargeStatus: opv.chargeStatus, refundStatus: opv.refundStatus });
   S.op = op;
@@ -500,14 +507,15 @@ function onOperation(opv) {
     S.ui.morph = DUR.promoteMs; return go('G06.SUCCESS');      // same run, same reference, score and checkpoints kept (R-07)
   }
   if (opv.status === 'failed') {
+    delete S.keys['continue:' + (S.offer && S.offer.offerId)];   // a retry after a rejected debit is a new request, not a replay
     S.op = null;
     if (S.offer && clock.serverNow() < clock.ms(S.offer.deadline) && opv.run.state === 'OFFER_OPEN') return go('G06.FAILED_RETRY');
     return go('G06.FAILED_END');
   }
   if (opv.status === 'refunded') return go('G06.REFUNDED');
-  if (opv.status === 'expired_unconfirmed') return go('G06.FAILED_END.UNCONFIRMED');
+  if (opv.status === 'expired_unconfirmed') { go('G06.FAILED_END.UNCONFIRMED'); return watchRefund(opv.operationId); }
   if (S.view !== 'G06.UNKNOWN') go('G06.PENDING');
-  pollOperation();
+  if (!fromPoll) pollOperation();
 }
 
 async function pollOperation() {   // 1 s backing off to 5 s; G06.UNKNOWN after 5 s; stop at the offer deadline (R-43)
@@ -520,10 +528,21 @@ async function pollOperation() {   // 1 s backing off to 5 s; G06.UNKNOWN after 
       if (g !== S.gen || !S.op) return;
       if (S.view === 'G06.PENDING' && now() - S.op.since > 5000) go('G06.UNKNOWN');
       if (!S.op.operationId) { await reconcileRun(); continue; }
-      try { onOperation(await api.operation(S.op.operationId)); return; }
+      try { onOperation(await api.operation(S.op.operationId), true); }   // the loop continues while still pending
       catch (e) { if (!(e instanceof ApiError) || !e.network) return handleError(e); }
     }
   } finally { S.ui.polling = false; }
+}
+
+/** A late-confirmed debit is refunded by the server (R-43); while its sheet is open, look for the refund for a bounded time. */
+async function watchRefund(operationId) {
+  const g = S.gen;
+  for (let i = 0; i < 12; i++) {
+    await new Promise(r => setTimeout(r, 5000));
+    if (g !== S.gen || S.view !== 'G06.FAILED_END.UNCONFIRMED') return;
+    try { const o = await api.operation(operationId); if (o.balance != null) S.balance = o.balance; if (o.status === 'refunded') { S.op = { ...S.op, ...o }; return go('G06.REFUNDED'); } }
+    catch (e) { /* the sheet stays; the result page shows reward status */ }
+  }
 }
 
 async function reconcileRun() {
