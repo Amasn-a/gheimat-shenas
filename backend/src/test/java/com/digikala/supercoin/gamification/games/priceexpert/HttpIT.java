@@ -308,6 +308,7 @@ class HttpIT {
         adminCall(ed, "POST", "/game/availability", "{\"enabled\":true,\"player_message\":null,\"reason\":\"restore\"}");
         int draft = adminCall(ed, "GET", "/config", null).json().at("/draft/version").asInt();
         assertEquals(200, adminCall(ed, "POST", "/config/versions/" + draft + "/discard", "{}").status());
+        assertTrue(adminCall(ed, "GET", "/config", null).json().get("draft").isNull(), "a discarded draft is gone");
         // admin replay and mismatch
         String key = UUID.randomUUID().toString();
         String body = "{\"enabled\":true,\"player_message\":null,\"reason\":\"same\"}";

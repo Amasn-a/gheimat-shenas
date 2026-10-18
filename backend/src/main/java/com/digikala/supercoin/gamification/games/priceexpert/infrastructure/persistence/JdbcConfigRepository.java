@@ -61,7 +61,8 @@ public final class JdbcConfigRepository implements ConfigRepository {
     }
 
     @Override public void retire(int version) {
-        update("UPDATE pe_config_version SET status = 'RETIRED' WHERE version = ? AND status = 'PUBLISHED'", version);
+        // a superseded published version, or a discarded draft
+        update("UPDATE pe_config_version SET status = 'RETIRED' WHERE version = ? AND status IN ('PUBLISHED', 'DRAFT')", version);
         published.remove(version);
     }
 
