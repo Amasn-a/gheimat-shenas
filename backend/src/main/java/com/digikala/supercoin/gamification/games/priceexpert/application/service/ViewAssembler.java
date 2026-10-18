@@ -18,7 +18,8 @@ public final class ViewAssembler {
         GameConfig cfg = ctx.config(run.configVersion);
         CatalogProduct ref = ctx.catalog().product(run.catalogVersion, run.referenceDkp).orElseThrow();
         QuestionView question = null;
-        if (run.state == RunState.QUESTION_OPEN) {
+        // response minimisation: another device of the same account learns that a question is open, not which product
+        if (run.state == RunState.QUESTION_OPEN && deviceId != null && deviceId.equals(run.deviceId)) {
             Question q = ctx.runs().openQuestion(run.runId).orElseThrow();
             question = questionView(q, run.catalogVersion);
         }

@@ -51,6 +51,7 @@ public final class Json {
                 .setSerializationInclusion(JsonInclude.Include.ALWAYS)
                 .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, true)
                 .configure(DeserializationFeature.FAIL_ON_NULL_FOR_PRIMITIVES, true)
+                .configure(com.fasterxml.jackson.core.JsonParser.Feature.STRICT_DUPLICATE_DETECTION, true)   // conflicting payload keys
                 .configure(SerializationFeature.FAIL_ON_EMPTY_BEANS, false)
                 .registerModule(time);
     }

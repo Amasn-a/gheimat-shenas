@@ -391,6 +391,15 @@ public final class RunService {
     // ------------------------------------------------------------------------------------------------ operation status
 
     public OperationView operation(Caller caller, String operationId) {
+        OperationView v = operationView(caller, operationId);
+        if (v.status().equals("pending")) return v;
+        // settled: the provider balance is read outside the transaction (never used to authorise anything); unknown → null
+        java.util.OptionalLong b = ctx.coin().balance(caller.userId());
+        return b.isEmpty() ? v : new OperationView(v.operationId(), v.status(), v.chargeStatus(), v.refundStatus(), v.chargedAmount(),
+                v.refundedAmount(), b.getAsLong(), v.run(), v.serverTime());
+    }
+
+    private OperationView operationView(Caller caller, String operationId) {
         return ctx.tx().inTransaction(() -> {
             Instant now = ctx.now();
             CoinOperation peek = ctx.ledger().findOperation(operationId).orElseThrow(GameException::notFound);
