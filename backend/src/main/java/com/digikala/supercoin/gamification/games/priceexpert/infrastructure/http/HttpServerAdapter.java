@@ -114,7 +114,11 @@ public final class HttpServerAdapter {
             String rel = path.substring(m.prefix().length());
             if (rel.isEmpty() || rel.endsWith("/")) rel = rel + "index.html";
             Path file = m.dir().resolve(rel).normalize();
-            if (!file.startsWith(m.dir()) || !Files.isRegularFile(file)) continue;
+            if (!file.startsWith(m.dir())) continue;
+            if (!Files.isRegularFile(file)) {
+                if (!m.html() && rel.endsWith(".jpg")) { placeholder(ex); return true; }   // development media: labelled placeholder
+                continue;
+            }
             byte[] bytes = Files.readAllBytes(file);
             var h = ex.getResponseHeaders();
             String type = contentType(file.toString());
@@ -130,6 +134,17 @@ public final class HttpServerAdapter {
             return true;
         }
         return false;
+    }
+
+    /** DEVELOPMENT media stand-in when a sample image is not available locally; clearly labelled, never a product photo. */
+    private static void placeholder(HttpExchange ex) throws IOException {
+        byte[] svg = ("<svg xmlns='http://www.w3.org/2000/svg' width='400' height='400' viewBox='0 0 400 400'><rect width='400' height='400' fill='#F1F2F4'/>"
+                + "<path d='M140 150h120l20 120H120z' fill='#D5D8DE'/><path d='M170 150v-20a30 30 0 0 1 60 0v20' fill='none' stroke='#B9BEC7' stroke-width='10'/>"
+                + "<text x='200' y='330' font-family='sans-serif' font-size='22' fill='#8A909A' text-anchor='middle'>sample image unavailable</text></svg>").getBytes(StandardCharsets.UTF_8);
+        ex.getResponseHeaders().set("Content-Type", "image/svg+xml");
+        ex.getResponseHeaders().set("Cache-Control", "no-cache");
+        ex.sendResponseHeaders(200, svg.length);
+        try (OutputStream os = ex.getResponseBody()) { os.write(svg); }
     }
 
     private static String contentType(String f) {

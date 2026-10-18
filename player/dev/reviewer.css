@@ -1,0 +1,13 @@
+/* DEVELOPMENT ONLY: reviewer controls live outside the player interface (never in the production build). */
+.pe-dev #app { right: 0; left: auto; width: min(100vw, 430px); }
+@media (min-width: 900px) { .pe-dev #app { left: 0; right: auto; width: 390px; height: 844px; top: 16px; left: 16px; border-radius: 32px; box-shadow: 0 0 0 8px #16141A, 0 20px 40px rgba(0,0,0,.35); } }
+.pe-devpanel { position: fixed; z-index: 1000; bottom: 8px; left: 8px; width: 300px; max-height: calc(100vh - 16px); overflow: auto; background: #111; color: #eee; font: 12px/1.5 system-ui, sans-serif; direction: ltr; border-radius: 10px; padding: 10px; box-shadow: 0 6px 24px rgba(0,0,0,.4); }
+@media (min-width: 900px) { .pe-devpanel { left: 430px; top: 16px; bottom: auto; width: 360px; } }
+.pe-devpanel.min > :not(header) { display: none; }
+.pe-devpanel header { display: flex; justify-content: space-between; align-items: center; gap: 6px; margin-bottom: 6px; }
+.pe-devpanel b.tag { background: #ffb020; color: #111; border-radius: 4px; padding: 0 6px; }
+.pe-devpanel fieldset { border: 1px solid #333; border-radius: 6px; margin: 6px 0; padding: 6px; }
+.pe-devpanel input, .pe-devpanel select, .pe-devpanel button { font: inherit; margin: 2px 0; }
+.pe-devpanel input[type=text], .pe-devpanel input[type=number] { width: 120px; }
+.pe-devpanel .state { font: 600 13px ui-monospace, monospace; color: #8fd; }
+.pe-devpanel small { color: #aaa; display: block; }
