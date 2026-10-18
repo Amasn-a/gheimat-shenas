@@ -383,7 +383,7 @@ function opsResults() {
       <textarea class="ad-text" data-model="ops.note" maxlength="1000" aria-label="یادداشت بررسی" placeholder="مثلاً: زمان پاسخ‌ها طبیعی است؛ الگوی تکراری دیده نشد.">${esc(o.note)}</textarea>
       <p class="qs-note">ثبت بررسی اثر مالی خودکار ندارد. در صورت نیاز، مدیر بازیکن را جداگانه مسدود می‌کند (R-22).</p>
       <div class="qa-btns">${btn('ثبت بررسی', 'review', { kind: 'primary' })}</div>
-      ${p.reviews?.length ? `<div class="qa-table-wrap"><table class="qa-table"><thead><tr><th>زمان</th><th>نتیجه</th><th>مدیر</th><th>یادداشت</th></tr></thead><tbody>${p.reviews.map(r => `<tr><td>${when(r.created_at || r.at)}</td><td>${OUTCOME[r.outcome] || esc(r.outcome)}</td><td>${esc(r.reviewer || r.actor || '')}</td><td>${esc(r.note || '')}</td></tr>`).join('')}</tbody></table></div>` : ''}
+      ${p.reviews?.length ? `<div class="qa-table-wrap"><table class="qa-table"><thead><tr><th>زمان</th><th>نتیجه</th><th>مدیر</th><th>یادداشت</th></tr></thead><tbody>${p.reviews.map(r => `<tr><td>${when(r.created_at || r.at)}</td><td>${OUTCOME[r.outcome] || esc(r.outcome)}</td><td>${esc(r.actor || '')}</td><td>${esc(r.note || '')}</td></tr>`).join('')}</tbody></table></div>` : ''}
     </section>` : '';
   return `${runs}${ops}<div class="ad-cols">${player}${review}</div>`;
 }

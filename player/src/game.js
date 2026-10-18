@@ -787,4 +787,3 @@ function onClick(e) {
   if (acts[a]) acts[a]();
 }
 
-export const debug = { S, stateId, render, closeCp, motion: () => motion.running() };

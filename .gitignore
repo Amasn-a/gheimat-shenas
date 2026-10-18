@@ -5,3 +5,4 @@ dev/backend.log
 node_modules/
 data/images/
 *.log
+dist/

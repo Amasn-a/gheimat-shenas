@@ -1,0 +1,13 @@
+{
+  "name": "price-expert-web",
+  "private": true,
+  "description": "Price Expert player and admin web builds (vanilla ES modules, bundled with esbuild).",
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "check": "node scripts/build.mjs --check-only"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  }
+}
