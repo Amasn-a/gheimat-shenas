@@ -1,0 +1,54 @@
+# Setup and configuration
+
+## Stack
+
+- **Backend:** Java 21, no framework in the domain or application layers. Ports (`application/port/out`) are implemented by JDBC repositories, the coin adapter, the code provider and the authenticator. `PriceExpertModule` is the composition root.
+  - For standalone runs and tests, `PriceExpertServer` puts a small JDK `HttpServer` edge (virtual threads) in front of it.
+  - Inside supercoin, the Spring application would construct `PriceExpertModule` and map the same routes. Spring was not available in this environment because Maven Central was blocked, so the HTTP edge is the stand-in.
+- **Database:** PostgreSQL 16. Migrations live in `backend/src/main/resources/db/migration` and use Flyway file names (`V1__…sql`). A minimal built-in migrator applies them, so Flyway can take over unchanged.
+- **Libraries** (all from the Debian Maven repository used offline): postgresql 42.7.2, HikariCP, Jackson 2.14, slf4j. Tests use JUnit 5 through the console launcher.
+- **Player and admin:** vanilla ES modules, no runtime dependencies, bundled with esbuild 0.28.2 (`npm run build`). The build target is `es2021`. The WebView floor is not known yet (it depends on the host docs).
+- **QA:** Python 3, Playwright with Chromium, psycopg2, ffmpeg (for frames from the motion video).
+
+## Environment variables
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `PE_ENV` | `development` | Set to `production` to refuse every development stand-in: fake or unconfigured coin, fake code provider, dev login, missing `PE_CODE_KEY` |
+| `PE_DB_URL` / `PE_DB_USER` / `PE_DB_PASSWORD` / `PE_DB_POOL` | `jdbc:postgresql://127.0.0.1:5432/price_expert`, `pe`, `pe`, `20` | Database connection |
+| `PE_HTTP_HOST` / `PE_HTTP_PORT` | `0.0.0.0` / `8080` | Standalone HTTP edge |
+| `PE_COIN_PROVIDER` | `fake` in development, `unconfigured` in production | `fake` is the in-project DigiCoin stand-in (R-44). `unconfigured` is the placeholder for the real adapter: balance unknown, every mutation UNKNOWN |
+| `PE_COIN_TIMEOUT_MS` | `2000` | Deadline per coin call; a timeout is recorded as UNKNOWN and reconciled by query |
+| `PE_FAKE_START_BALANCE` | `120` | Development only: starting balance of a fake wallet |
+| `PE_CODE_KEY` | dev-derived key in development | Base64 AES key for campaign codes at rest. **Required** in production |
+| `PE_CATALOG_JSON` | — | Product database JSON to import and publish when no catalog is active yet |
+| `PE_MEDIA_PREFIX` / `PE_MEDIA_DIR` | — | Development only: serve product images from a local folder under `/media/` instead of the CDN |
+| `PE_PLAYER_DIR` / `PE_ADMIN_DIR` | — | Static folders served under `/play/` and `/admin/` (the source folder in development, `dist/…` for a production build) |
+| `PE_CSP` | strict default (self, Digikala image CDN, Google fonts) | Content-Security-Policy for the HTML pages |
+| `PE_RATE_LIMIT` | on | `off` disables the proposed per-user and per-run limits (tests only) |
+| `PE_DEV_ADMINS` | `editor:EDITOR:editor-dev-password,viewer:VIEWER:viewer-dev-password` | Development admin accounts (PBKDF2). Never seeded in production |
+| `PE_BOUND_MAX_*` | unset | Admin numeric bounds, which are still pending owner values. Only structural invariants are enforced while these are unset |
+
+The defaults for local development are in `.env.example`. `dev/run-backend.sh` sets them.
+
+## Database notes
+
+- One schema migration (`V1`). Every table is prefixed `pe_`. The development fake-wallet tables (`pe_fake_*`) are created too; production never writes them, and they can be dropped there.
+- **Financial uniqueness is held by partial unique indexes, not by application memory.** Each of these can exist only once:
+  - an active run per user;
+  - a checkpoint reward per run;
+  - a streak reward per user and cap day;
+  - a refund per charge;
+  - a live charge per offer.
+- `pe_audit_event` is append-only, enforced by a trigger that rejects UPDATE and DELETE.
+- `pe_idempotency` rows are purged hourly by a worker (24 h retention, proposed).
+
+## Running in production (what is still missing)
+
+Production start-up is refused until these are replaced (see `docs/STATUS.md`):
+
+- the real DigiCoin adapter;
+- the Super App player authenticator;
+- the campaign code source.
+
+Admin sign-in is a development stand-in for organisation SSO. The player's `host-boot.js` has to call `configureHost({...})` with the real bridge. Without it the production player shows G11.AUTH_ERROR, which is the expected, truthful behaviour.
