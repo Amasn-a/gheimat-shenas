@@ -1,0 +1,7 @@
+backend/build/
+backend/.gradle/
+dev/backend.pid
+dev/backend.log
+node_modules/
+data/images/
+*.log

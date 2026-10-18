@@ -1,0 +1,43 @@
+// Offline build: dependencies come from the Debian maven repository on this machine
+// (Maven Central is not reachable from the build environment). In supercoin these lines are
+// replaced by the module's own Spring Boot dependencies; the game code itself has no framework imports.
+plugins {
+    id 'java'
+    id 'application'
+}
+
+group = 'com.digikala.supercoin'
+version = '0.1.0'
+
+java { toolchain { languageVersion = JavaLanguageVersion.of(21) } }
+
+repositories {
+    maven { url = uri('file:///usr/share/maven-repo') }
+}
+
+dependencies {
+    implementation 'org.postgresql:postgresql:42.7.2'
+    implementation 'com.zaxxer:HikariCP:2.7.9'
+    implementation 'com.fasterxml.jackson.core:jackson-databind:2.14.0'
+    implementation 'com.fasterxml.jackson.core:jackson-core:2.14.1'
+    implementation 'com.fasterxml.jackson.core:jackson-annotations:2.14.0'
+    runtimeOnly 'org.slf4j:slf4j-jdk14:1.7.32'
+    implementation 'org.slf4j:slf4j-api:1.7.32'
+    testImplementation files('/usr/share/java/junit-platform-console-standalone-1.9.1.jar')
+}
+
+application {
+    mainClass = 'com.digikala.supercoin.gamification.games.priceexpert.PriceExpertServer'
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.compilerArgs += ['-Xlint:unchecked', '-parameters']
+}
+
+test {
+    useJUnitPlatform()
+    testLogging { events 'failed'; exceptionFormat 'full'; showStandardStreams = false }
+    systemProperty 'pe.test.db', System.getProperty('pe.test.db', 'jdbc:postgresql://127.0.0.1:5432/price_expert_test?user=pe&password=pe')
+    maxParallelForks = 1
+}
