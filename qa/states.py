@@ -53,8 +53,18 @@ async def wait_view(pg, prefix, timeout=8000):
     raise AssertionError(f"timeout waiting for {prefix}, at {await view(pg)}")
 
 
+SCROLL_AUDIT = """() => { const out = []; const se = document.scrollingElement;
+  if (se.scrollHeight > innerHeight + 1 || se.scrollWidth > innerWidth + 1) out.push('page');
+  document.querySelectorAll('#app *').forEach(el => { const cs = getComputedStyle(el);
+    if (el.closest('[data-scroll]') || el.closest('.mo-layer')) return;
+    if ((el.scrollHeight > el.clientHeight + 1 && ['auto', 'scroll'].includes(cs.overflowY)) || (el.scrollWidth > el.clientWidth + 1 && ['auto', 'scroll'].includes(cs.overflowX))) out.push(el.className || el.tagName); });
+  return out; }"""
+
+
 async def shot(pg, name):
     await pg.screenshot(path=f"{OUT}/{name}-{THEME}.png")
+    sc = await pg.evaluate(SCROLL_AUDIT)                           # UX-4 / T45: no player scrolling outside the product list
+    if sc: errors.append(f"{name}: unexpected scroll {sc}")
     log.append(f"  {name}: {await view(pg)}")
 
 
@@ -109,6 +119,9 @@ async def s_timeout(b):
     await wait_view(pg, "G05.OFFER", 6000); await shot(pg, "timeout-3-offer")
     await act(pg, "skip")
     await wait_view(pg, "G07.", 8000); await pg.wait_for_timeout(1500); await shot(pg, "timeout-4-result")
+    await act(pg, "share")                                         # T48: name-free share image; dev host shares image-only
+    await wait_view(pg, "G09.ASSET", 8000); await pg.wait_for_timeout(400); await shot(pg, "share-1-asset")
+    await act(pg, "share-send"); await pg.wait_for_timeout(800); await shot(pg, "share-2-sent")
 
 
 async def s_no_funds(b):
