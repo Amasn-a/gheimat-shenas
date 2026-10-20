@@ -78,6 +78,7 @@ class RewardsIT {
         Caller c = env.caller(u);
         String first = playTo(c, 3);
         env.m.runs.leave(c, first);                                      // earns cp 3 + streak, record 3
+        env.m.dailyRewards.claim(c);                                     // the daily reward is credited on the player's claim
         env.drainLedger();
         String second = playTo(c, 5);                                    // would be a new record and cp 5
         env.m.admin.block(EDITOR, c.userId(), "abuse review", "review-42");
@@ -173,12 +174,11 @@ class RewardsIT {
             String run3 = playTo(c, 0);
             env.m.runs.leave(c, run3);
             assertEquals(2, env.count("SELECT count(*) FROM pe_coin_operation WHERE user_id = ? AND type = 'STREAK_REWARD'", c.userId()), "one streak reward per start day");
-            assertEquals(2, env.m.queries.bootstrap(c).streak().days());
+            assertEquals(2, env.m.queries.bootstrap(c).dailyReward().streakDays());
             // a day without a finished run breaks it
             env.clock.set(ZonedDateTime.of(d.plusDays(3), LocalTime.of(10, 0), teh).toInstant());
             BootstrapView b = env.m.queries.bootstrap(c);
-            assertEquals(0, b.streak().days());
-            assertTrue(b.streak().lostNotice());
+            assertEquals(0, b.dailyReward().streakDays());
         } finally { env.clock.set(saved); }
     }
 
@@ -203,7 +203,7 @@ class RewardsIT {
         // raising the cap mid-day raises the high-water; lowering it again does not lower today's cap
         int active = env.m.ctx.tx().inTransaction(env.m.ctx::activeConfigVersion);
         GameConfig b = LaunchConfig.value();
-        GameConfig four = new GameConfig(4, b.inputMs(), b.acceptMs(), b.offerMs(), b.inactivityMs(), b.offerActivationMs(), b.timeoutGraceMs(),
+        GameConfig four = new GameConfig(4, b.inputMs(), b.acceptMs(), b.offerMs(), b.offerAcceptMs(), b.paymentResolutionMs(), b.inactivityMs(), b.offerActivationMs(), b.timeoutGraceMs(),
                 b.checkpointAutoContinueMs(), b.checkpoints(), b.continueRule(), b.streakReward(), b.bands(), null, null, b.features());
         var d1 = env.m.admin.saveDraft(EDITOR, four, null);
         env.m.admin.publish(EDITOR, d1.version(), active, d1.revision(), "test");
@@ -237,9 +237,9 @@ class RewardsIT {
         env.m.runs.answer(c, q.question().questionId(), Choice.valueOf(TestEnv.flip(env.rightChoice(run))), q.question().t0().plusMillis(900));
         env.clock.advance(1_700);
         ActivationView a = env.m.runs.activateOffer(c, run);
-        env.script(u, "[{\"op\":\"charge\",\"outcome\":\"late_success\",\"late_ms\":15000}]");
+        env.script(u, "[{\"op\":\"charge\",\"outcome\":\"late_success\",\"late_ms\":80000}]");
         env.m.runs.continueOffer(c, a.offer().offerId(), env.clock.instant());
-        env.clock.set(a.offer().deadline());
+        env.clock.set(a.offer().resolveBy());
         env.m.deadlines.sweep(100);
         env.clock.advance(16_000);
         env.drainLedger();
@@ -249,7 +249,7 @@ class RewardsIT {
         // payout alert: set a threshold of 1 and pay a reward → an alert, no player-facing change
         int active = env.m.ctx.tx().inTransaction(env.m.ctx::activeConfigVersion);
         GameConfig b = LaunchConfig.value();
-        GameConfig withAlert = new GameConfig(b.playsPerDay(), b.inputMs(), b.acceptMs(), b.offerMs(), b.inactivityMs(), b.offerActivationMs(), b.timeoutGraceMs(),
+        GameConfig withAlert = new GameConfig(b.playsPerDay(), b.inputMs(), b.acceptMs(), b.offerMs(), b.offerAcceptMs(), b.paymentResolutionMs(), b.inactivityMs(), b.offerActivationMs(), b.timeoutGraceMs(),
                 b.checkpointAutoContinueMs(), b.checkpoints(), b.continueRule(), b.streakReward(), b.bands(), 1L, null, b.features());
         var d = env.m.admin.saveDraft(EDITOR, withAlert, null);
         env.m.admin.publish(EDITOR, d.version(), active, d.revision(), "test");
@@ -281,6 +281,8 @@ class RewardsIT {
             env.m.runs.leave(c, run);
             env.drainLedger();                                           // provider does not answer before midnight
             env.clock.set(ZonedDateTime.of(d.plusDays(1), LocalTime.of(0, 30), teh).toInstant());
+            env.drainLedgerFully();
+            env.m.dailyRewards.claim(c);                                 // D's daily reward, claimed on D + 1, stays on D's cap
             env.drainLedgerFully();
             assertEquals(2, env.count("SELECT count(*) FROM pe_coin_operation WHERE run_id = ? AND status = 'SUCCEEDED'", run));
             assertEquals(d, ((java.sql.Date) env.scalar("SELECT cap_day FROM pe_coin_operation WHERE run_id = ? AND type = 'CHECKPOINT_REWARD'", run)).toLocalDate());
@@ -346,7 +348,7 @@ class RewardsIT {
         // review of 716d889: share / products / haptics switches never reached the player; streak-off still advertised a reward
         int active = env.m.ctx.tx().inTransaction(env.m.ctx::activeConfigVersion);
         GameConfig b = LaunchConfig.value();
-        GameConfig off = new GameConfig(b.playsPerDay(), b.inputMs(), b.acceptMs(), b.offerMs(), b.inactivityMs(), b.offerActivationMs(), b.timeoutGraceMs(),
+        GameConfig off = new GameConfig(b.playsPerDay(), b.inputMs(), b.acceptMs(), b.offerMs(), b.offerAcceptMs(), b.paymentResolutionMs(), b.inactivityMs(), b.offerActivationMs(), b.timeoutGraceMs(),
                 b.checkpointAutoContinueMs(), b.checkpoints(), b.continueRule(), b.streakReward(), b.bands(), b.payoutAlertThreshold(),
                 b.priceChangeThresholdBp(), new GameConfig.Features(false, false, false, false));
         var d = env.m.admin.saveDraft(EDITOR, off, null);
@@ -356,7 +358,7 @@ class RewardsIT {
         try {
             BootstrapView boot = env.m.queries.bootstrap(c);
             assertEquals(new FeaturesView(false, false, false, false), boot.config().features());
-            assertEquals(0, boot.streakReward(), "no streak reward is advertised while the streak switch is off");
+            assertEquals("none", boot.dailyReward().state(), "no daily reward while the streak switch is off");
             run = env.m.runs.start(c).run().runId();
             assertFalse(env.m.queries.run(c, run).runConfig().features().haptics());
             env.m.runs.leave(c, run);
@@ -370,9 +372,10 @@ class RewardsIT {
         assertEquals("FEATURE_DISABLED", assertThrows(GameException.class, () -> env.m.queries.share(c, run)).code());
         Caller c2 = env.caller(user());
         assertEquals(new FeaturesView(true, true, true, true), env.m.queries.bootstrap(c2).config().features());
-        assertEquals(1, env.m.queries.bootstrap(c2).streakReward());
         String run2 = env.m.runs.start(c2).run().runId();
         env.m.runs.leave(c2, run2);
+        assertEquals("claimable", env.m.queries.bootstrap(c2).dailyReward().state(), "the first finished run of the day records the reward");
+        assertEquals(1, env.m.queries.bootstrap(c2).dailyReward().amount());
         assertFalse(env.m.queries.products(c2, run2).items().isEmpty());
         assertNotNull(env.m.queries.share(c2, run2));
     }
@@ -381,7 +384,7 @@ class RewardsIT {
 
     static GameConfig plays(int n) {
         GameConfig b = LaunchConfig.value();
-        return new GameConfig(n, b.inputMs(), b.acceptMs(), b.offerMs(), b.inactivityMs(), b.offerActivationMs(), b.timeoutGraceMs(),
+        return new GameConfig(n, b.inputMs(), b.acceptMs(), b.offerMs(), b.offerAcceptMs(), b.paymentResolutionMs(), b.inactivityMs(), b.offerActivationMs(), b.timeoutGraceMs(),
                 b.checkpointAutoContinueMs(), b.checkpoints(), b.continueRule(), b.streakReward(), b.bands(), b.payoutAlertThreshold(),
                 b.priceChangeThresholdBp(), b.features());
     }

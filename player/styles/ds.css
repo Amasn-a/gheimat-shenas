@@ -439,7 +439,6 @@
 .v3-verdict--ok .v3-verdict__i { background: var(--ok-fill); } .v3-verdict--ok .v3-verdict__t { color: var(--ok); }
 .v3-verdict--no .v3-verdict__i { background: var(--no-fill); } .v3-verdict--no .v3-verdict__t { color: var(--no); }
 .v3-verdict--time .v3-verdict__i { background: #1E2129; }
-[data-theme="dark"] .v3-verdict--time .v3-verdict__i { background: #4A4150; }
 @keyframes v3-verdict-in { from { transform: translateY(8px) scale(.97); opacity: 0; } }
 /* Result badge on the product itself, so the verdict is tied to the right card */
 .v3-hero__badge { position: absolute; top: 20px; inset-inline-start: 20px; z-index: 2; width: 40px; height: 40px; border-radius: 999px; display: grid; place-items: center; color: #FFFFFF; font: 900 20px/1 var(--f); box-shadow: 0 0 0 4px var(--card); }

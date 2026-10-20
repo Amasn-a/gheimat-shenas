@@ -27,11 +27,13 @@ public final class QueryService {
     private final PriceExpertContext ctx;
     private final RunService runs;
     private final ViewAssembler views;
+    private final DailyRewardService dailyRewards;
 
-    public QueryService(PriceExpertContext ctx, RunService runs, ViewAssembler views) {
+    public QueryService(PriceExpertContext ctx, RunService runs, ViewAssembler views, DailyRewardService dailyRewards) {
         this.ctx = ctx;
         this.runs = runs;
         this.views = views;
+        this.dailyRewards = dailyRewards;
     }
 
     public BootstrapView bootstrap(Caller caller) {
@@ -65,17 +67,14 @@ public final class QueryService {
             }
             player = ctx.players().findPlayer(caller.userId()).orElseThrow();
             int playsUsed = ctx.players().playsUsed(caller.userId(), today);
-            StreakPolicy.Streak streak = StreakPolicy.compute(ctx.players().streakEligibleDates(caller.userId(), today.minusDays(400)), today);
-            String rewardToday = ctx.ledger().streakRewardOf(caller.userId(), today)
-                    .map(op -> op.status == OperationStatus.SUCCEEDED ? "paid" : "pending").orElse("none");
             CheckpointView best = bestCheckpoint(caller.userId(), cfg);
             CampaignBanner banner = ctx.campaigns().liveAt(now).flatMap(c -> cfg.enabledCheckpoints().stream()
                     .filter(cp -> c.codeCheckpointIds().contains(cp.id())).findFirst()
                     .map(cp -> new CampaignBanner(c.campaignId(), c.name(), cp.requiredCorrect(), cp.title(), c.codeAmountToman()))).orElse(null);
             return new BootstrapView(access, !player.onboarded, new Quota(Math.max(0, cfg.playsPerDay() - playsUsed), cfg.playsPerDay(),
-                    BusinessCalendar.nextMidnight(now)), player.record, best, new Streak(streak.days(), rewardToday, streak.lostNotice()),
+                    BusinessCalendar.nextMidnight(now)), player.record, best, dailyRewards.view(caller.userId(), now),
                     balance.isPresent() ? balance.getAsLong() : null, active,
-                    ViewAssembler.runConfig(cfg, cfgVersion, ctx.activeCatalogVersion()), cfg.effectiveStreakReward(), banner, now);
+                    ViewAssembler.runConfig(cfg, cfgVersion, ctx.activeCatalogVersion()), banner, now);
         });
     }
 
@@ -103,9 +102,7 @@ public final class QueryService {
             List<CoinOperation> ops = ctx.ledger().operationsOfRun(run.runId);
             RewardStatus cpReward = ops.stream().filter(o -> o.type == OperationType.CHECKPOINT_REWARD).findFirst()
                     .map(o -> rewardStatus(o, now)).orElse(new RewardStatus(0, 0, run.finishReason == FinishReason.blocked && run.highestCheckpointId != null ? "cancelled" : "none"));
-            RewardStatus streakReward = ops.stream().filter(o -> o.type == OperationType.STREAK_REWARD).findFirst().map(o -> rewardStatus(o, now)).orElse(null);
             LocalDate today = BusinessCalendar.dateOf(now);
-            StreakPolicy.Streak streak = StreakPolicy.compute(ctx.players().streakEligibleDates(run.userId, today.minusDays(400)), today);
             NextGoal next = cfg.enabledCheckpoints().stream().filter(cp -> cp.requiredCorrect() > run.score).findFirst()
                     .map(cp -> new NextGoal(cp.requiredCorrect() - run.score, cp.title(), cp.reward(), cp.requiredCorrect())).orElse(null);
             int playsUsed = ctx.players().playsUsed(run.userId, today);
@@ -115,7 +112,7 @@ public final class QueryService {
             return new ResultView(run.runId, run.score, run.finishReason.name(), run.noOfferReason, l.player().record,
                     Boolean.TRUE.equals(run.newRecord), run.recordBefore == null ? 0 : run.recordBefore,
                     run.finishReason == FinishReason.blocked ? null : ViewAssembler.checkpoint(cfg, run.highestCheckpointId), cpReward,
-                    new StreakResult(streak.days(), streakReward, streak.lostNotice()), run.continuesUsed, limitUsed, next,
+                    run.continuesUsed, limitUsed, next,
                     new Quota(Math.max(0, active.playsPerDay() - playsUsed), active.playsPerDay(), BusinessCalendar.nextMidnight(now)),
                     balance.isPresent() ? balance.getAsLong() : null, campaignCode(run), run.finishedAt, now);
         });
@@ -127,7 +124,7 @@ public final class QueryService {
             case SUCCEEDED -> "succeeded";
             case HELD, NEEDS_REVIEW, UNKNOWN -> "delayed";
             case FAILED -> "delayed";
-            case PENDING -> o.createdAt.plus(DELAYED_AFTER).isBefore(now) ? "delayed" : "pending";
+            case PENDING, CLAIMABLE -> o.createdAt.plus(DELAYED_AFTER).isBefore(now) ? "delayed" : "pending";
         };
         return new RewardStatus(o.amount + o.heldAmount, o.heldAmount, status);
     }
@@ -154,7 +151,7 @@ public final class QueryService {
             List<ProductItem> items = new ArrayList<>();
             long firstRef = qs.isEmpty() ? run.referenceDkp : qs.get(0).referenceDkp;
             CatalogProduct first = ctx.catalog().product(run.catalogVersion, firstRef).orElseThrow();
-            items.add(item(1, "reference", first, first.priceToman(), null, false));
+            items.add(item(1, "reference", null, first, first.priceToman(), null, false));
             String lossProduct = null;
             for (Question q : qs) {
                 CatalogProduct p = ctx.catalog().product(run.catalogVersion, q.comparisonDkp).orElseThrow();
@@ -162,7 +159,7 @@ public final class QueryService {
                 if (loss) lossProduct = String.valueOf(p.dkp());
                 String result = switch (q.state) { case CORRECT -> "correct"; case WRONG -> "wrong"; case TIMED_OUT -> "timeout"; default -> "unanswered"; };
                 Long price = q.state == QuestionState.UNANSWERED ? null : q.comparisonPrice;   // revealed only for settled questions
-                items.add(item(items.size() + 1, "question", p, price, result, loss));
+                items.add(item(items.size() + 1, "question", q.questionId, p, price, result, loss));
             }
             return new ProductsView(run.runId, items, lossProduct, now);
         });
@@ -173,8 +170,8 @@ public final class QueryService {
         if (!on) throw new GameException("FEATURE_DISABLED", 409, feature + " is switched off", java.util.Map.of("feature", feature));
     }
 
-    private static ProductItem item(int pos, String role, CatalogProduct p, Long price, String result, boolean loss) {
-        return new ProductItem(pos, role, String.valueOf(p.dkp()), String.valueOf(p.variantId()), p.displayTitle(), p.title(), p.imageUrl(),
+    private static ProductItem item(int pos, String role, String questionId, CatalogProduct p, Long price, String result, boolean loss) {
+        return new ProductItem(pos, role, questionId, String.valueOf(p.dkp()), String.valueOf(p.variantId()), p.displayTitle(), p.title(), p.imageUrl(),
                 price, result, loss, String.format(PRODUCT_LINK_TEMPLATE, p.dkp()));
     }
 
@@ -185,8 +182,8 @@ public final class QueryService {
             if (!run.isFinished()) throw runs.stateError("RUN_NOT_FINISHED", run, l.player(), caller);
             requireFeature(ViewAssembler.features(ctx.config(run.configVersion)).share(), "share");
             CheckpointView cp = run.finishReason == FinishReason.blocked ? null : ViewAssembler.checkpoint(ctx.config(run.configVersion), run.highestCheckpointId);
-            return new ShareView(run.score, cp == null ? null : cp.title(), cp == null ? null : cp.badgeAssetId(), l.player().streakDays,
-                    "قیمت‌شناس", null);                                       // no host deep-link contract supplied: image only (R-56)
+            return new ShareView(run.score, cp == null ? null : cp.title(), cp == null ? null : cp.badgeAssetId(),
+                    "قیمت‌شناس", null);                                       // no streak on the share image: streak lives in the daily reward modal only                                       // no host deep-link contract supplied: image only (R-56)
         });
     }
 }

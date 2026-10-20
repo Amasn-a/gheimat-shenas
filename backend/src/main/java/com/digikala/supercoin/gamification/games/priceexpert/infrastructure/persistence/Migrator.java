@@ -17,7 +17,8 @@ import java.util.logging.Logger;
  */
 public final class Migrator {
     private static final Logger LOG = Logger.getLogger(Migrator.class.getName());
-    public static final List<String> MIGRATIONS = List.of("V1__price_expert_schema.sql", "V2__idempotency_lease.sql", "V3__active_run_scan.sql");
+    public static final List<String> MIGRATIONS = List.of("V1__price_expert_schema.sql", "V2__idempotency_lease.sql", "V3__active_run_scan.sql",
+            "V4__timing_contract_daily_claim.sql");
 
     private Migrator() {}
 

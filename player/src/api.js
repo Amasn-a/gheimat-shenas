@@ -91,4 +91,6 @@ export const api = {
   products: id => request('GET', `/runs/${id}/products`),
   share: id => request('GET', `/runs/${id}/share`),
   onboarding: key => request('POST', '/player/onboarding', { key }),
+  dailyReward: () => request('GET', '/player/daily-reward', { timeoutMs: 4000 }),
+  claimDaily: key => request('POST', '/player/daily-reward/claim', { key, timeoutMs: 5000 }),
 };

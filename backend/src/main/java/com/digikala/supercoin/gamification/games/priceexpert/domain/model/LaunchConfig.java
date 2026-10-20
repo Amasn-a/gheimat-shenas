@@ -10,15 +10,17 @@ import java.util.List;
 public final class LaunchConfig {
     private LaunchConfig() {}
 
-    public static final long INPUT_MS = 10_500;      // R-45
-    public static final long ACCEPT_MS = 11_000;     // R-45
-    public static final long OFFER_MS = 10_000;      // spec, R-08
+    public static final long INPUT_MS = 10_000;          // visible answer window (brief 2026-10-20; replaces R-45 10,500)
+    public static final long ACCEPT_MS = 12_500;         // answer arrival deadline (brief 2026-10-20; replaces R-45 11,000)
+    public static final long OFFER_MS = 10_000;          // visible extra-life window (spec, R-08)
+    public static final long OFFER_ACCEPT_MS = 15_000;   // purchase arrival deadline (brief 2026-10-20)
+    public static final long PAYMENT_RESOLUTION_MS = 60_000;   // PROPOSED wait for an admitted, unresolved charge
     public static final long INACTIVITY_MS = 180_000; // spec
 
     public static GameConfig value() {
         return new GameConfig(
                 3,                                   // R-33
-                INPUT_MS, ACCEPT_MS, OFFER_MS, INACTIVITY_MS,
+                INPUT_MS, ACCEPT_MS, OFFER_MS, OFFER_ACCEPT_MS, PAYMENT_RESOLUTION_MS, INACTIVITY_MS,
                 INACTIVITY_MS,                       // offer activation wait: PROPOSED, see GameConfig javadoc
                 1_000,                               // timeout grace (handoff)
                 5_000,                               // checkpoint auto continue: PROPOSED (F-01)

@@ -3,6 +3,7 @@ package com.digikala.supercoin.gamification.games.priceexpert.infrastructure.htt
 import com.digikala.supercoin.gamification.games.priceexpert.application.port.out.IdempotencyRepository;
 import com.digikala.supercoin.gamification.games.priceexpert.application.port.out.PlayerAuthenticator;
 import com.digikala.supercoin.gamification.games.priceexpert.application.port.out.TransactionRunner;
+import com.digikala.supercoin.gamification.games.priceexpert.application.service.DailyRewardService;
 import com.digikala.supercoin.gamification.games.priceexpert.application.service.QueryService;
 import com.digikala.supercoin.gamification.games.priceexpert.application.service.RunService;
 import com.digikala.supercoin.gamification.games.priceexpert.application.service.RunService.Caller;
@@ -35,16 +36,18 @@ public final class PlayerApi {
 
     private final RunService runs;
     private final QueryService queries;
+    private final DailyRewardService dailyRewards;
     private final PlayerAuthenticator auth;
     private final IdempotencyRepository idem;
     private final TransactionRunner tx;
     private final InstantSource clock;
     private final RateLimiter limiter;
 
-    public PlayerApi(RunService runs, QueryService queries, PlayerAuthenticator auth, IdempotencyRepository idem, TransactionRunner tx,
-                     InstantSource clock, RateLimiter limiter) {
+    public PlayerApi(RunService runs, QueryService queries, DailyRewardService dailyRewards, PlayerAuthenticator auth, IdempotencyRepository idem,
+                     TransactionRunner tx, InstantSource clock, RateLimiter limiter) {
         this.runs = runs;
         this.queries = queries;
+        this.dailyRewards = dailyRewards;
         this.auth = auth;
         this.idem = idem;
         this.tx = tx;
@@ -88,7 +91,13 @@ public final class PlayerApi {
                 route("GET", PREFIX + "/runs/{id}/result", r -> Http.Response.ok(queries.result(caller(r), id(r, "id")))),
                 route("GET", PREFIX + "/runs/{id}/products", r -> Http.Response.ok(queries.products(caller(r), id(r, "id")))),
                 route("GET", PREFIX + "/runs/{id}/share", r -> Http.Response.ok(queries.share(caller(r), id(r, "id")))),
-                route("POST", PREFIX + "/player/onboarding", r -> idempotent(r, c -> { r.json(EmptyBody.class); runs.onboarding(c); return Http.Response.status(200, Map.of("ok", true)); }))
+                route("POST", PREFIX + "/player/onboarding", r -> idempotent(r, c -> { r.json(EmptyBody.class); runs.onboarding(c); return Http.Response.status(200, Map.of("ok", true)); })),
+                route("GET", PREFIX + "/player/daily-reward", r -> {
+                    Caller c = caller(r);
+                    limiter.check("poll:daily:" + c.userId(), RateLimiter.POLL_PER_SECOND);
+                    return Http.Response.ok(dailyRewards.status(c));
+                }),
+                route("POST", PREFIX + "/player/daily-reward/claim", r -> idempotent(r, c -> { r.json(EmptyBody.class); return Http.Response.ok(dailyRewards.claim(c)); }))
         );
     }
 

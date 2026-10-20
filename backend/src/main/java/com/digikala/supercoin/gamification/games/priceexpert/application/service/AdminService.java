@@ -63,11 +63,16 @@ public final class AdminService {
 
     // ------------------------------------------------------------------------------------------------ bootstrap
 
-    /** Publishes the owner-approved launch configuration as version 1 on an empty database. */
+    /**
+     * Publishes the owner-approved launch configuration as version 1 on an empty database. On an existing database whose
+     * active version predates a fixed P0 timing change (2026-10-20: 10 s / 12.5 s answers, 10 s / 15 s extra life) a copy
+     * with only the timing fields replaced is published instead, audited as a system migration; a pending draft gets the
+     * same timing so it stays publishable. Runs already started keep their pinned version.
+     */
     public void ensureLaunchConfig() {
         ctx.tx().run(() -> {
             Settings s = ctx.configs().lockSettings();
-            if (s.activeConfigVersion() != null) return;
+            if (s.activeConfigVersion() != null) { migrateTiming(s); return; }
             Instant now = ctx.now();
             GameConfig launch = LaunchConfig.value();
             Map<String, String> errors = ConfigValidator.validate(launch, ctx.bounds());
@@ -78,6 +83,42 @@ public final class AdminService {
             ctx.ledger().raiseCapHighWater(BusinessCalendar.dateOf(now), launch.dailyAccountCap(), now);
             ctx.audit().append("system:bootstrap", "SYSTEM", "config.publish", "config:" + v, null, json.apply(launch), "launch values R-20/R-33/R-41/R-45/R-47", null, now);
         });
+    }
+
+    private void migrateTiming(Settings s) {
+        StoredConfig active = ctx.configs().version(s.activeConfigVersion()).orElseThrow();
+        GameConfig a = active.config();
+        if (hasLaunchTiming(a)) return;
+        Instant now = ctx.now();
+        GameConfig fixed = withLaunchTiming(a);
+        Map<String, String> errors = ConfigValidator.validate(fixed, ctx.bounds());
+        if (!errors.isEmpty()) throw new IllegalStateException("timing migration would publish an invalid config: " + errors);
+        currentDraft().ifPresent(d -> {
+            if (hasLaunchTiming(d.config())) return;
+            ctx.configs().updateDraft(d.version(), withLaunchTiming(d.config()));
+            ctx.audit().append("system:migration", "SYSTEM", "config.draft", "config:" + d.version(), json.apply(d.config()),
+                    json.apply(withLaunchTiming(d.config())), "fixed P0 timing of 2026-10-20", null, now);
+        });
+        int v = ctx.configs().insertDraft(fixed, active.version(), "system:migration", now);
+        ctx.configs().markPublished(v, "system:migration", now);
+        ctx.configs().retire(active.version());
+        ctx.configs().saveSettings(new Settings(v, s.activeCatalogVersion(), s.gameEnabled(), s.playerMessage(), s.revision() + 1, "system:migration", now));
+        ctx.ledger().raiseCapHighWater(BusinessCalendar.dateOf(now), fixed.dailyAccountCap(), now);
+        ctx.audit().append("system:migration", "SYSTEM", "config.publish", "config:" + v, json.apply(a), json.apply(fixed),
+                "fixed P0 timing of 2026-10-20: answers 10 s visible / 12.5 s arrival; extra life 10 s visible / 15 s arrival",
+                "config:" + active.version(), now);
+    }
+
+    static boolean hasLaunchTiming(GameConfig c) {
+        return c.inputMs() == LaunchConfig.INPUT_MS && c.acceptMs() == LaunchConfig.ACCEPT_MS && c.offerMs() == LaunchConfig.OFFER_MS
+                && c.offerAcceptMs() == LaunchConfig.OFFER_ACCEPT_MS && c.paymentResolutionMs() > 0;
+    }
+
+    static GameConfig withLaunchTiming(GameConfig c) {
+        return new GameConfig(c.playsPerDay(), LaunchConfig.INPUT_MS, LaunchConfig.ACCEPT_MS, LaunchConfig.OFFER_MS, LaunchConfig.OFFER_ACCEPT_MS,
+                c.paymentResolutionMs() > 0 ? c.paymentResolutionMs() : LaunchConfig.PAYMENT_RESOLUTION_MS, c.inactivityMs(), c.offerActivationMs(),
+                c.timeoutGraceMs(), c.checkpointAutoContinueMs(), c.checkpoints(), c.continueRule(), c.streakReward(), c.bands(),
+                c.payoutAlertThreshold(), c.priceChangeThresholdBp(), c.features());
     }
 
     // ------------------------------------------------------------------------------------------------ A01–A04 configuration

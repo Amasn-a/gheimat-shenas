@@ -128,12 +128,14 @@ class DomainRulesTest {
         assertTrue(ConfigValidator.validate(ok, ConfigValidator.Bounds.pending()).isEmpty());
         var bands = new ArrayList<>(ok.bands());
         bands.set(4, new DifficultyBand(10, 0, true, 800, true));          // minimum 0 would allow equal prices
-        GameConfig bad = new GameConfig(0, 10_000, ok.acceptMs(), ok.offerMs(), ok.inactivityMs(), ok.offerActivationMs(), ok.timeoutGraceMs(),
+        GameConfig bad = new GameConfig(0, 10_500, 11_000, ok.offerMs(), 10_000, ok.paymentResolutionMs(), ok.inactivityMs(), ok.offerActivationMs(), ok.timeoutGraceMs(),
                 ok.checkpointAutoContinueMs(), List.of(new GameConfig.Checkpoint("cp_5", 5, "a", "badge_5", -1, true), new GameConfig.Checkpoint("cp_3", 3, "b", "badge_3", 5, true)),
                 new GameConfig.ContinueRule(true, 0, -1), -1, bands, null, null, ok.features());
         var e = ConfigValidator.validate(bad, ConfigValidator.Bounds.pending());
         assertTrue(e.containsKey("plays_per_day"));
-        assertTrue(e.containsKey("input_ms"), "timer is fixed in P0");
+        assertTrue(e.containsKey("input_ms"), "timer is fixed in P0: the obsolete 10,500 ms input deadline is refused");
+        assertTrue(e.containsKey("accept_ms"), "the obsolete 11,000 ms acceptance is refused");
+        assertTrue(e.containsKey("offer_accept_ms"), "the purchase arrival deadline is fixed at 15,000 ms");
         assertTrue(e.containsKey("checkpoints[0].reward"));
         assertTrue(e.containsKey("checkpoints[1].required_correct"), "ascending steps");
         assertTrue(e.containsKey("continue.cost"));
@@ -150,7 +152,7 @@ class DomainRulesTest {
         GameConfig b = LaunchConfig.value();
         List<GameConfig.Checkpoint> cps = b.checkpoints().stream()
                 .map(c -> new GameConfig.Checkpoint(c.id(), c.requiredCorrect(), c.title(), c.badgeAssetId(), 1_500_000_000, c.enabled())).toList();
-        GameConfig huge = new GameConfig(3, b.inputMs(), b.acceptMs(), b.offerMs(), b.inactivityMs(), b.offerActivationMs(), b.timeoutGraceMs(),
+        GameConfig huge = new GameConfig(3, b.inputMs(), b.acceptMs(), b.offerMs(), b.offerAcceptMs(), b.paymentResolutionMs(), b.inactivityMs(), b.offerActivationMs(), b.timeoutGraceMs(),
                 b.checkpointAutoContinueMs(), cps, b.continueRule(), 1, b.bands(), b.payoutAlertThreshold(), b.priceChangeThresholdBp(), b.features());
         assertEquals(4_500_000_001L, huge.dailyAccountCapExact());
         assertThrows(ArithmeticException.class, huge::dailyAccountCap, "an oversized cap throws instead of wrapping");

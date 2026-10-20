@@ -24,8 +24,12 @@ public final class JdbcIdempotencyRepository implements IdempotencyRepository {
             WHERE scope = ? AND method = ? AND path = ? AND idem_key = ? AND status = 'IN_PROGRESS' AND body_hash = ?
               AND (lease_until <= ? OR (lease_until IS NULL AND created_at <= ?))""", leaseUntil, owner, scope, method, path, key, bodyHash, now, now.minus(lease));
         if (taken == 1) return Optional.empty();
-        return one("SELECT body_hash, status, response_status, response_body FROM pe_idempotency WHERE scope = ? AND method = ? AND path = ? AND idem_key = ?",
-                rs -> new Stored(rs.getString(1), rs.getString(2), intOrNull(rs, "response_status"), rs.getString(4)), scope, method, path, key);
+        // one key names one operation of the caller (unique (scope, idem_key)): the same key on another method or path is
+        // reported as a different body, so the caller answers IDEMPOTENCY_MISMATCH and no second operation is created
+        return one("""
+            SELECT CASE WHEN method = ? AND path = ? THEN body_hash ELSE 'key-bound-to-another-operation' END, status, response_status, response_body
+            FROM pe_idempotency WHERE scope = ? AND idem_key = ?""",
+                rs -> new Stored(rs.getString(1), rs.getString(2), intOrNull(rs, "response_status"), rs.getString(4)), method, path, scope, key);
     }
 
     @Override public void complete(String scope, String method, String path, String key, String owner, int status, String body) {

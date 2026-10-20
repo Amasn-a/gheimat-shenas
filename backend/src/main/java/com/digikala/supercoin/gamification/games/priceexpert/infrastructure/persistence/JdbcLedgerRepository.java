@@ -37,9 +37,21 @@ public final class JdbcLedgerRepository implements LedgerRepository {
     @Override public void updateOperation(CoinOperation o) {
         update("""
             UPDATE pe_coin_operation SET status = ?, amount = ?, held_amount = ?, provider_ref = ?, attempts = ?, next_attempt_at = ?,
-              give_up_at = ?, last_error = ?, updated_at = now(), executed_at = ?, confirmed_at = ? WHERE operation_id = ?""",
+              give_up_at = ?, last_error = ?, updated_at = now(), executed_at = ?, confirmed_at = ?, claimed_at = ? WHERE operation_id = ?""",
             o.status, o.amount, o.heldAmount, nz(o.providerRef), o.attempts, nz(o.nextAttemptAt), nz(o.giveUpAt), nz(o.lastError),
-            nz(o.executedAt), nz(o.confirmedAt), o.operationId);
+            nz(o.executedAt), nz(o.confirmedAt), nz(o.claimedAt), o.operationId);
+    }
+
+    @Override public List<CoinOperation> lockClaimableStreakRewards(String userId) {
+        return query("SELECT * FROM pe_coin_operation WHERE user_id = ? AND type = 'STREAK_REWARD' AND status = 'CLAIMABLE' ORDER BY cap_day FOR UPDATE",
+                JdbcLedgerRepository::op, userId);
+    }
+
+    @Override public List<CoinOperation> latestStreakClaim(String userId) {
+        return query("""
+            SELECT * FROM pe_coin_operation WHERE user_id = ? AND type = 'STREAK_REWARD'
+              AND claimed_at = (SELECT max(claimed_at) FROM pe_coin_operation WHERE user_id = ? AND type = 'STREAK_REWARD')
+            ORDER BY cap_day""", JdbcLedgerRepository::op, userId, userId);
     }
 
     @Override public List<DueOperation> dueOperations(Instant now, int limit) {
@@ -117,6 +129,7 @@ public final class JdbcLedgerRepository implements LedgerRepository {
         o.createdAt = ts(rs, "created_at");
         o.executedAt = ts(rs, "executed_at");
         o.confirmedAt = ts(rs, "confirmed_at");
+        o.claimedAt = ts(rs, "claimed_at");
         return o;
     }
 }

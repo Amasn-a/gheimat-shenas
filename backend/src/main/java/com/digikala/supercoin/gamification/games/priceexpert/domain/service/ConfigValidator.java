@@ -36,10 +36,12 @@ public final class ConfigValidator {
         if (c.playsPerDay() < 1) e.put("plays_per_day", "must be at least 1");
         max(e, "plays_per_day", c.playsPerDay(), bounds.maxPlaysPerDay());
 
-        // Timer values are not configurable in P0 (spec A01; R-45). Reject any change instead of silently fixing it.
-        if (c.inputMs() != LaunchConfig.INPUT_MS) e.put("input_ms", "fixed at 10500 in P0 (R-45)");
-        if (c.acceptMs() != LaunchConfig.ACCEPT_MS) e.put("accept_ms", "fixed at 11000 in P0 (R-45)");
-        if (c.offerMs() != LaunchConfig.OFFER_MS) e.put("offer_ms", "fixed at 10000 in P0 (spec)");
+        // Timer values are not configurable in P0 (spec A01; timing contract of 2026-10-20). Reject any change instead of fixing it.
+        if (c.inputMs() != LaunchConfig.INPUT_MS) e.put("input_ms", "fixed at " + LaunchConfig.INPUT_MS + " in P0");
+        if (c.acceptMs() != LaunchConfig.ACCEPT_MS) e.put("accept_ms", "fixed at " + LaunchConfig.ACCEPT_MS + " in P0");
+        if (c.offerMs() != LaunchConfig.OFFER_MS) e.put("offer_ms", "fixed at " + LaunchConfig.OFFER_MS + " in P0 (spec)");
+        if (c.offerAcceptMs() != LaunchConfig.OFFER_ACCEPT_MS) e.put("offer_accept_ms", "fixed at " + LaunchConfig.OFFER_ACCEPT_MS + " in P0");
+        if (c.paymentResolutionMs() < 10_000 || c.paymentResolutionMs() > 600_000) e.put("payment_resolution_ms", "must be between 10000 and 600000");
         if (c.inactivityMs() != LaunchConfig.INACTIVITY_MS) e.put("inactivity_ms", "fixed at 180000 in P0 (spec)");
         if (c.offerActivationMs() < c.offerMs()) e.put("offer_activation_ms", "must be at least the offer window");
         if (c.timeoutGraceMs() < 0 || c.timeoutGraceMs() > 5_000) e.put("timeout_grace_ms", "must be between 0 and 5000");

@@ -65,13 +65,15 @@ public final class PaymentService {
             if (q.outcome() != Outcome.NOT_FOUND) return q;              // reached the provider: applied (refunded if late) or rejected
         }
         if (op.type == OperationType.CHARGE) {
-            // Nothing is known at the provider. A debit is sent (first time or again) only while the offer can still be
-            // granted; once the offer is over no fresh debit is ever sent (R-43). A charge that was never sent is closed.
+            // Nothing is known at the provider. A debit is sent (first time or again) only while the admitted purchase can
+            // still be granted (run waiting, before resolveBy); after that no fresh debit is ever sent. A charge never sent is closed.
             // One that may have been sent is reconciled by status query only: if it lands it is refunded once; if it never
             // shows up, the retry window (giveUpAt) moves it to NEEDS_REVIEW with an alert, never to a silent FAILED,
             // because a provider "not found" is not yet known to be final (DigiCoin contract, D06).
             Offer offer = ctx.tx().inTransaction(() -> ctx.runs().findOffer(op.offerId)).orElse(null);
-            if (offer == null || offer.state != OfferState.PAYMENT_PENDING || !offer.openAt(ctx.now())) {
+            long resolveMs = offer == null ? 0 : ctx.tx().inTransaction(() -> ctx.runs().findRun(offer.runId))
+                    .map(run -> ctx.config(run.configVersion).paymentResolutionMs()).orElse(0L);
+            if (offer == null || offer.state != OfferState.PAYMENT_PENDING || !ctx.now().isBefore(offer.resolveBy(resolveMs))) {
                 return mayHaveBeenSent ? new CoinGateway.Result(Outcome.UNKNOWN, null, "offer over: reconciling an earlier attempt by status query")
                         : new CoinGateway.Result(Outcome.FAILED, null, "not sent: offer ended before execution");
             }
@@ -108,9 +110,11 @@ public final class PaymentService {
     }
 
     /**
-     * Applies a charge outcome (R-39, R-43, R-46; handoff "Continue grant"). The offer leaves PAYMENT_PENDING by one
-     * conditional transition: GRANTED only if the confirmation is recorded strictly before the offer deadline and the
-     * run can still continue; any confirmed debit that does not buy a continue gets exactly one refund.
+     * Applies a charge outcome (brief 2026-10-20, R-46; handoff "Continue grant"). The offer leaves PAYMENT_PENDING by one
+     * conditional transition: an ADMITTED purchase is granted when its confirmation is recorded before the offer's
+     * resolveBy instant and the run can still continue, even after the visible and the arrival deadlines; any confirmed
+     * debit that does not buy a continue gets exactly one refund. A definitive rejection reopens the same offer only
+     * while a new purchase could still be admitted (accept deadline); after that the run ends without a continue.
      */
     public void applyChargeOutcome(String operationId, CoinGateway.Result r) {
         ctx.tx().run(() -> {
@@ -122,9 +126,10 @@ public final class PaymentService {
             if (op.status == OperationStatus.SUCCEEDED || op.status == OperationStatus.FAILED || op.status == OperationStatus.NEEDS_REVIEW) return;
             Offer offer = ctx.runs().lockOffer(op.offerId).orElseThrow();
             if (r.providerRef() != null) op.providerRef = r.providerRef();
-            // The offer deadline is decided first: at or after it the offer is over (R-43), whatever the outcome says.
-            if (run.state == RunState.PAYMENT_PENDING && !offer.openAt(now)) {
-                settlement.finish(run, player, FinishReason.continue_failed, offer.deadline);
+            // The resolution bound is decided first: at or after it the run no longer waits, whatever the outcome says.
+            Instant resolveBy = offer.resolveBy(ctx.config(run.configVersion).paymentResolutionMs());
+            if (run.state == RunState.PAYMENT_PENDING && !now.isBefore(resolveBy)) {
+                settlement.finish(run, player, FinishReason.continue_failed, resolveBy);
                 offer = ctx.runs().lockOffer(op.offerId).orElseThrow();
             }
 
@@ -135,7 +140,7 @@ public final class PaymentService {
                     op.nextAttemptAt = null;
                     ctx.ledger().updateOperation(op);
                     boolean granted = false;
-                    if (offer.state == OfferState.PAYMENT_PENDING && offer.openAt(now) && run.state == RunState.PAYMENT_PENDING) {
+                    if (offer.state == OfferState.PAYMENT_PENDING && run.state == RunState.PAYMENT_PENDING) {
                         if (canContinue(run, player)) {
                             offer.state = OfferState.GRANTED;
                             offer.closedAt = now;
@@ -163,13 +168,17 @@ public final class PaymentService {
                     op.lastError = r.error();
                     op.nextAttemptAt = null;
                     ctx.ledger().updateOperation(op);
-                    if (offer.state == OfferState.PAYMENT_PENDING && offer.openAt(now) && run.state == RunState.PAYMENT_PENDING) {
-                        offer.state = OfferState.OPEN;            // known rejection: the same offer stays actionable until its deadline
-                        offer.operationId = null;
-                        ctx.runs().updateOffer(offer);
-                        run.state = RunState.OFFER_OPEN;
-                        run.nextDeadlineAt = offer.deadline;
-                        ctx.runs().updateRun(run);
+                    if (offer.state == OfferState.PAYMENT_PENDING && run.state == RunState.PAYMENT_PENDING) {
+                        if (offer.admits(now)) {
+                            offer.state = OfferState.OPEN;        // known rejection: the same offer stays actionable while a purchase can be admitted
+                            offer.operationId = null;
+                            ctx.runs().updateOffer(offer);
+                            run.state = RunState.OFFER_OPEN;
+                            run.nextDeadlineAt = offer.acceptDeadline.plusMillis(ctx.config(run.configVersion).timeoutGraceMs());
+                            ctx.runs().updateRun(run);
+                        } else {                                  // definitive failure after the admission window: no life, the run ends
+                            settlement.finish(run, player, FinishReason.continue_failed, now);
+                        }
                     }
                     emit("continue_failed", op, run);
                 }

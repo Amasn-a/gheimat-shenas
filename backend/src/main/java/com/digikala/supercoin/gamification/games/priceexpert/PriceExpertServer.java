@@ -54,9 +54,9 @@ public final class PriceExpertServer {
         http = new HttpServerAdapter(clock, csp);
         RateLimiter limiter = new RateLimiter(clock, !"off".equals(env.get("PE_RATE_LIMIT")));
         JdbcIdempotencyRepository idem = new JdbcIdempotencyRepository();
-        http.add(new PlayerApi(module.runs, module.queries, module.auth, idem, module.ctx.tx(), clock, limiter).routes());
+        http.add(new PlayerApi(module.runs, module.queries, module.dailyRewards, module.auth, idem, module.ctx.tx(), clock, limiter).routes());
         http.add(new AdminApi(module.admin, adminRepo, idem, module.ctx.tx(), clock).routes());
-        if (!module.production && module.fakeCoin != null) http.add(new DevApi(module.fakeCoin, module.ctx.coin()).routes());
+        if (!module.production && module.fakeCoin != null) http.add(new DevApi(module.fakeCoin, module.ctx.coin(), module.ctx).routes());
         mount(env, "PE_PLAYER_DIR", "/play/", true);
         mount(env, "PE_ADMIN_DIR", "/admin/", true);
         mount(env, "PE_MEDIA_DIR", "/media/", false);

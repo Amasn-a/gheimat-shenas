@@ -3,6 +3,8 @@ package com.digikala.supercoin.gamification.games.priceexpert.application.servic
 import com.digikala.supercoin.gamification.games.priceexpert.domain.model.*;
 import com.digikala.supercoin.gamification.games.priceexpert.domain.model.Enums.*;
 
+import com.digikala.supercoin.gamification.games.priceexpert.domain.service.Ids;
+
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -55,16 +57,55 @@ public final class DeadlineService {
             case OFFER_OPEN -> {
                 Offer o = ctx.runs().latestOfferOfRun(run.runId).orElseThrow();
                 if (!gameOn) { settlement.finish(run, player, FinishReason.game_off, now); return true; }   // no continue after game-off
-                if (!o.openAt(now)) { settlement.finish(run, player, FinishReason.expired, o.deadline); return true; }
+                if (!now.isBefore(o.acceptDeadline.plusMillis(cfg.timeoutGraceMs()))) {
+                    // Locked so this decision and a purchase receipt being recorded are serialised. A purchase that ARRIVED by
+                    // the accept deadline is admitted even when its request has not reached the run yet or died.
+                    o = ctx.runs().lockOffer(o.offerId).orElseThrow();
+                    if (o.state == OfferState.OPEN && o.purchaseReceivedAt != null && o.admits(o.purchaseReceivedAt)
+                            && run.continuesUsed < cfg.continueRule().cap()) admitPurchase(run, o, cfg, now);
+                    else settlement.finish(run, player, FinishReason.expired, o.acceptDeadline);
+                    return true;
+                }
             }
             case PAYMENT_PENDING -> {
                 Offer o = ctx.runs().latestOfferOfRun(run.runId).orElseThrow();
-                // Unconfirmed at the deadline: end now, keep the play consumed, reconcile and refund later (R-43, R-51).
-                if (!o.openAt(now)) { settlement.finish(run, player, FinishReason.continue_failed, o.deadline); return true; }
+                // An admitted purchase is not failed by the offer deadlines: the run waits for the definitive outcome until
+                // resolveBy (PROPOSED bound); still unconfirmed then, it ends; a later debit is refunded (R-43 path, R-51).
+                Instant resolveBy = o.resolveBy(cfg.paymentResolutionMs());
+                if (!now.isBefore(resolveBy)) { settlement.finish(run, player, FinishReason.continue_failed, resolveBy); return true; }
             }
             default -> { }
         }
         return false;
+    }
+
+    /**
+     * Turns an admitted purchase into its charge operation (outbox row) and moves offer and run to PAYMENT_PENDING; the
+     * caller holds the player, run and offer locks and has checked admission and the continue cap. Returns the operation id.
+     */
+    String admitPurchase(Run run, Offer offer, GameConfig cfg, Instant now) {
+        CoinOperation op = new CoinOperation();
+        op.operationId = Ids.newId();
+        op.userId = run.userId;
+        op.runId = run.runId;
+        op.offerId = offer.offerId;
+        op.type = OperationType.CHARGE;
+        op.amount = offer.cost;                                          // cost snapshot of this offer, never from the client
+        op.status = OperationStatus.PENDING;
+        op.createdAt = now;
+        op.nextAttemptAt = now;                                          // the worker picks it up if no request attempts it
+        op.giveUpAt = now.plusSeconds(72 * 3600);
+        ctx.ledger().insertOperation(op);
+        offer.state = OfferState.PAYMENT_PENDING;
+        offer.operationId = op.operationId;
+        offer.purchaseReceivedAt = null;
+        ctx.runs().updateOffer(offer);
+        run.state = RunState.PAYMENT_PENDING;
+        run.nextDeadlineAt = offer.resolveBy(cfg.paymentResolutionMs());
+        ctx.runs().updateRun(run);
+        Map<String, Object> e = Map.of("offer_id", offer.offerId, "operation_id", op.operationId);
+        ctx.tx().afterCommit(() -> ctx.events().emit("continue_requested", "continue_requested:" + op.operationId, e));
+        return op.operationId;
     }
 
     /** Sweeper: applies due transitions to runs whose next deadline has passed. Skips players and runs locked by a live request. */

@@ -24,7 +24,8 @@ public final class Enums {
         public boolean isCredit() { return this == CHECKPOINT_REWARD || this == STREAK_REWARD; } }
 
     /** PENDING = intent stored, not yet confirmed by the provider; UNKNOWN = sent, outcome not known. */
-    public enum OperationStatus { PENDING, UNKNOWN, SUCCEEDED, FAILED, HELD, NEEDS_REVIEW }
+    /** CLAIMABLE: a daily (streak) reward earned and recorded, waiting for the player's claim; never picked by the worker. */
+    public enum OperationStatus { CLAIMABLE, PENDING, UNKNOWN, SUCCEEDED, FAILED, HELD, NEEDS_REVIEW }
 
     /** Why a miss opened no continue offer (answer/activation responses; client picks the screen). */
     public enum NoOfferReason { no_funds, limit_used, game_off, disabled, blocked, no_products }

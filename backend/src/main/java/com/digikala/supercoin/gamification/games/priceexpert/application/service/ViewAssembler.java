@@ -28,7 +28,7 @@ public final class ViewAssembler {
         OperationRef op = null;
         Optional<Offer> o = ctx.runs().latestOfferOfRun(run.runId);
         if (o.isPresent() && (run.state == RunState.OFFER_OPEN || run.state == RunState.PAYMENT_PENDING)) {
-            offer = offerView(o.get());
+            offer = offerView(o.get(), cfg);
             if (o.get().operationId != null) op = new OperationRef(o.get().operationId, "pending");
         }
         return new RunView(run.runId, run.state.name(), run.finishReason == null ? null : run.finishReason.name(), run.noOfferReason,
@@ -51,8 +51,8 @@ public final class ViewAssembler {
                 direction, q.settledAt);
     }
 
-    public static OfferView offerView(Offer o) {
-        return new OfferView(o.offerId, o.state.name(), o.openedAt, o.deadline, o.cost);
+    public static OfferView offerView(Offer o, GameConfig cfg) {
+        return new OfferView(o.offerId, o.state.name(), o.openedAt, o.deadline, o.acceptDeadline, o.resolveBy(cfg.paymentResolutionMs()), o.cost);
     }
 
     public static CheckpointView checkpoint(GameConfig cfg, String checkpointId) {
@@ -66,7 +66,7 @@ public final class ViewAssembler {
     }
 
     public static RunConfigView runConfig(GameConfig cfg, int configVersion, int catalogVersion) {
-        return new RunConfigView(configVersion, catalogVersion, cfg.inputMs(), cfg.acceptMs(), cfg.offerMs(), cfg.checkpointAutoContinueMs(),
+        return new RunConfigView(configVersion, catalogVersion, cfg.inputMs(), cfg.acceptMs(), cfg.offerMs(), cfg.offerAcceptMs(), cfg.checkpointAutoContinueMs(),
                 cfg.enabledCheckpoints().stream().map(ViewAssembler::checkpoint).toList(),
                 new ContinueRuleView(cfg.continueRule().enabled(), cfg.continueRule().cost(), cfg.continueRule().cap()),
                 features(cfg));

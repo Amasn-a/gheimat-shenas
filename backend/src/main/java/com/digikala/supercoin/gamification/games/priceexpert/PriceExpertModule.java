@@ -39,6 +39,7 @@ public final class PriceExpertModule {
     public final ViewAssembler views;
     public final RunService runs;
     public final QueryService queries;
+    public final DailyRewardService dailyRewards;
     public final CampaignService campaigns;
     public final CatalogService catalog;
     public final AdminService admin;
@@ -83,7 +84,8 @@ public final class PriceExpertModule {
         this.payments = new PaymentService(ctx, settlement, selection);
         this.views = new ViewAssembler(ctx);
         this.runs = new RunService(ctx, selection, settlement, deadlines, payments, views);
-        this.queries = new QueryService(ctx, runs, views);
+        this.dailyRewards = new DailyRewardService(ctx, payments);
+        this.queries = new QueryService(ctx, runs, views, dailyRewards);
         this.campaigns = new CampaignService(ctx);
         this.catalog = new CatalogService(ctx);
         this.admin = new AdminService(ctx, settlement, deadlines);

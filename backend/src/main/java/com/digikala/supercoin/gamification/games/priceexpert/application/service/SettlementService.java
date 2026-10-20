@@ -111,10 +111,12 @@ public final class SettlementService {
         op.type = type;
         op.amount = grant;
         op.heldAmount = held;
-        op.status = grant > 0 ? OperationStatus.PENDING : OperationStatus.HELD;
+        // a daily (streak) reward waits for the player's claim in the daily reward modal (brief 2026-10-20); others are paid at once
+        boolean claim = type == OperationType.STREAK_REWARD;
+        op.status = grant <= 0 ? OperationStatus.HELD : claim ? OperationStatus.CLAIMABLE : OperationStatus.PENDING;
         op.capDay = capDay;
         op.createdAt = now;
-        op.nextAttemptAt = grant > 0 ? now : null;
+        op.nextAttemptAt = grant > 0 && !claim ? now : null;
         op.giveUpAt = now.plusSeconds(72 * 3600);
         ctx.ledger().insertOperation(op);
         if (held > 0) {

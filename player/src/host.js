@@ -1,5 +1,5 @@
 // Host adapter: every Super App interaction goes through here. The bridge contract (login token handover, back/close,
-// device id, theme, haptics, share, deep link, WebView floor) is with the app team (D09) and is NOT in the supplied
+// device id, haptics, share, deep link, WebView floor) is with the app team (D09) and is NOT in the supplied
 // sources, so no bridge object name or URL scheme is invented. The integration supplies an implementation through
 // configureHost(); until then each capability falls back to a browser behaviour or reports itself unsupported.
 let impl = {};
@@ -12,7 +12,6 @@ export const capabilities = () => ({
   haptics: typeof impl.haptic === 'function',            // no vibration fallback: haptics only through the approved bridge (R-10)
   productLink: typeof impl.openProduct === 'function',
   back: typeof impl.onBack === 'function',
-  theme: typeof impl.theme === 'function',
 });
 
 export async function token() { return typeof impl.getToken === 'function' ? impl.getToken() : null; }
@@ -28,16 +27,6 @@ export function deviceId() {
   device = crypto.randomUUID ? crypto.randomUUID() : 'xxxxxxxx-xxxx-4xxx-8xxx-xxxxxxxxxxxx'.replace(/x/g, () => (Math.random() * 16 | 0).toString(16));
   try { localStorage.setItem('pe.device', device); } catch (e) { /* the id then lives for this page only */ }
   return device;
-}
-
-export function theme() {
-  const t = typeof impl.theme === 'function' ? impl.theme() : null;
-  if (t === 'light' || t === 'dark') return t;
-  return window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-}
-export function onTheme(cb) {
-  if (typeof impl.onTheme === 'function') impl.onTheme(cb);
-  if (window.matchMedia) matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', () => cb(theme()));
 }
 
 export function haptic(kind) { if (typeof impl.haptic === 'function' && ['correct', 'wrong', 'checkpoint'].includes(kind)) impl.haptic(kind); }

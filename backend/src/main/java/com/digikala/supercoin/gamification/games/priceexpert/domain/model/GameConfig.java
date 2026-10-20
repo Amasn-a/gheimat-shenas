@@ -7,9 +7,15 @@ import java.util.List;
  * One immutable published configuration version. Active runs are pinned to the version they started with.
  * Launch values (R-20, R-33, R-45, R-47) live in {@code LaunchConfig}; nothing here is a frontend constant.
  *
- * @param inputMs                  client input window after t0 (R-45: 10,500)
- * @param acceptMs                 server acceptance window after t0 (R-45: 11,000)
- * @param offerMs                  continue-offer window once activated (spec: 10,000)
+ * @param inputMs                  visible answer window after t0; the client locks input at t0 + this (brief 2026-10-20: 10,000)
+ * @param acceptMs                 backend arrival deadline for an initial answer request, t0 + this inclusive (brief: 12,500).
+ *                                 It limits admission only; an admitted answer may finish processing after it.
+ * @param offerMs                  visible extra-life decision window after the offer start (spec: 10,000)
+ * @param offerAcceptMs            backend arrival deadline for an initial purchase request, offer start + this inclusive
+ *                                 (brief 2026-10-20: 15,000). Older versions carry offerMs here (strict R-43 behaviour).
+ * @param paymentResolutionMs      PROPOSED: how long after the purchase admission deadline an admitted, still unresolved
+ *                                 charge keeps the run waiting before it ends as continue_failed (a later debit is refunded,
+ *                                 R-43 path). 0 in versions published before the brief (the run ended at the offer deadline).
  * @param inactivityMs             between questions (spec: 180,000)
  * @param offerActivationMs        PROPOSED engineering value: how long a miss may wait for the post-feedback
  *                                 offer activation (F-02) before the run ends. Reuses the inactivity value until decided.
@@ -24,6 +30,8 @@ public record GameConfig(
         long inputMs,
         long acceptMs,
         long offerMs,
+        long offerAcceptMs,
+        long paymentResolutionMs,
         long inactivityMs,
         long offerActivationMs,
         long timeoutGraceMs,

@@ -1,5 +1,7 @@
 /* سیستم طراحی قیمت‌شناس v3 · ویترین — generated from tokens.json */
+/* Light theme only (brief 2026-10-20): the dark token set was removed; nothing switches to it. */
 :root, [data-theme="light"] {
+  color-scheme: only light;
   --stage-1: #E43551;
   --stage-2: #D42340;
   --stage-3: #A80F2C;
@@ -47,55 +49,6 @@
   --scrim: rgba(60,4,16,0.58);
   --shadow-ticket: 0 6px 16px rgba(94,8,25,0.22);
   --shadow-hero: 0 10px 24px rgba(94,8,25,0.26);
-}
-[data-theme="dark"] {
-  --stage-1: #5A1428;
-  --stage-2: #3A0C1B;
-  --stage-3: #1E0710;
-  --stage-edge: #12040A;
-  --stage-fill: rgba(255,255,255,0.12);
-  --stage-well: rgba(0,0,0,0.35);
-  --stage-dim: rgba(0,0,0,0.45);
-  --on-stage: #FFFFFF;
-  --card: #241D26;
-  --card-2: #2F2732;
-  --well: #FFFFFF;
-  --well-line: #ECEEF2;
-  --ink: #F3F1F4;
-  --ink-2: #BDB3BF;
-  --ink-3: #6E6470;
-  --line: #3A3140;
-  --brand: #F24E63;
-  --brand-strong: #D21E3B;
-  --link: #FF8A98;
-  --key: #3A313C;
-  --key-ink: #F3F1F4;
-  --gold-1: #FFD65A;
-  --gold: #FFC633;
-  --gold-2: #F4B400;
-  --gold-edge: #B57E00;
-  --gold-ink: #3A2800;
-  --gold-tint: #3A2F12;
-  --gold-line: #B8902E;
-  --coin-text: #FFD777;
-  --ok: #3CC7B5;
-  --ok-fill: #0A7A5F;
-  --ok-glow: #22C49A;
-  --ok-tint: #12302C;
-  --no: #FF8A98;
-  --no-fill: #C42537;
-  --no-tint: #3A1A20;
-  --info-tint: #2E2733;
-  --warn: #FFA24D;
-  --warn-ring: #FF8A3D;
-  --timer-arc: #FFFFFF;
-  --timer-track: rgba(255,255,255,0.22);
-  --sheet-ring: #BDB3BF;
-  --wallet: #2F2732;
-  --focus: #7FA8FF;
-  --scrim: rgba(0,0,0,0.62);
-  --shadow-ticket: 0 6px 16px rgba(0,0,0,0.45);
-  --shadow-hero: 0 10px 24px rgba(0,0,0,0.5);
 }
 :root {
   --space-1: 4px;

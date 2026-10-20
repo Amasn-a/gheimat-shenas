@@ -26,4 +26,5 @@ public class CoinOperation {
     public Instant createdAt;
     public Instant executedAt;
     public Instant confirmedAt;
+    public Instant claimedAt;      // daily reward: when the player's claim turned CLAIMABLE into PENDING
 }

@@ -47,5 +47,11 @@ public interface RunRepository {
     Optional<Offer> findOffer(String offerId);
     Optional<Offer> lockOffer(String offerId);
     void updateOffer(Offer offer);
+    /**
+     * Records the arrival of a purchase request on an OPEN offer of the caller's own run and device, only if it arrived
+     * by the offer's accept deadline and no receipt is pending (first wins). Like the answer receipt it takes only the
+     * offer row lock, so an on-time request is admitted even when its run lock arrives after the deadline.
+     */
+    boolean recordPurchaseReceipt(String offerId, String userId, String deviceId, Instant receivedAt);
     Optional<Offer> latestOfferOfRun(String runId);
 }

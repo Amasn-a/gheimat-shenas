@@ -13,7 +13,10 @@ import java.util.*;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-/** Paid continue (R-39, R-43, R-46, R-50, R-63, F-02): T22–T29, T51 against the in-project fake DigiCoin provider. */
+/**
+ * Paid continue (R-46, R-50, R-63, F-02; timing contract of 2026-10-20: 10 s visible window, purchase arrival deadline
+ * offer start + 15 s, an admitted charge resolves until resolveBy): T22–T29, T51 against the in-project fake DigiCoin provider.
+ */
 class PaymentIT {
     static TestEnv env;
     static final Admin EDITOR = new Admin("editor", Role.EDITOR);
@@ -159,18 +162,22 @@ class PaymentIT {
 
     // ------------------------------------------------------------------------------------------------ T25, T26, T28
 
-    @Test void t25_t26_unconfirmedAtExpiryEndsTheRun_lateConfirmationIsRefundedOnce() {
+    @Test void t25_t26_admittedPurchaseOutlivesBothDeadlines_unresolvedAtResolveByEndsTheRun_lateConfirmationIsRefundedOnce() {
         Miss m = miss(0);
         ActivationView a = activateAfterFeedback(m);
-        env.script(m.user(), "[{\"op\":\"charge\",\"outcome\":\"late_success\",\"late_ms\":20000}]");
+        env.script(m.user(), "[{\"op\":\"charge\",\"outcome\":\"late_success\",\"late_ms\":90000}]");
         OperationView op = env.m.runs.continueOffer(m.c(), a.offer().offerId(), env.clock.instant());
         assertEquals("pending", op.status());
+        assertFalse(op.definitive());
         assertEquals("PAYMENT_PENDING", op.run().state());
-        assertEquals(a.offer().deadline(), op.run().offer().deadline(), "the ring keeps the same deadline during payment");
-        env.clock.set(a.offer().deadline().minusMillis(1));
-        env.m.deadlines.sweep(100);
-        assertEquals("PAYMENT_PENDING", env.scalar("SELECT state FROM pe_run WHERE run_id = ?", m.runId()));
-        env.clock.set(a.offer().deadline());                            // at the deadline the offer is over
+        assertEquals(a.offer().deadline(), op.run().offer().deadline(), "the visible window never moves during payment");
+        assertEquals(a.offer().resolveBy(), op.resolveBy());
+        for (Instant t : new Instant[]{a.offer().deadline(), a.offer().acceptDeadline().plusMillis(2_000), a.offer().resolveBy().minusMillis(1)}) {
+            env.clock.set(t);                                           // neither deadline fails an admitted purchase
+            env.m.deadlines.sweep(100);
+            assertEquals("PAYMENT_PENDING", env.scalar("SELECT state FROM pe_run WHERE run_id = ?", m.runId()), "at " + t);
+        }
+        env.clock.set(a.offer().resolveBy());                           // PROPOSED resolution bound: the run stops waiting
         env.m.deadlines.sweep(100);
         assertEquals("continue_failed", env.scalar("SELECT finish_reason FROM pe_run WHERE run_id = ?", m.runId()));
         assertEquals("ENDED_UNCONFIRMED", env.scalar("SELECT state FROM pe_offer WHERE offer_id = ?", a.offer().offerId()));
@@ -191,24 +198,24 @@ class PaymentIT {
         assertEquals("FINISHED", end.run().state());
     }
 
-    @Test void t28_confirmationAtTheDeadlineIsLate_oneMillisecondBeforeIsInTime() {
+    @Test void t28_confirmationAtResolveByIsLate_oneMillisecondBeforeIsInTime() {
         for (long early : new long[]{0, 1}) {
             Miss m = miss(0);
             ActivationView a = activateAfterFeedback(m);
-            long lateMs = java.time.Duration.between(env.clock.instant(), a.offer().deadline()).toMillis() - early;
+            long lateMs = java.time.Duration.between(env.clock.instant(), a.offer().resolveBy()).toMillis() - early;
             env.script(m.user(), "[{\"op\":\"charge\",\"outcome\":\"late_success\",\"late_ms\":" + lateMs + "}]");
             OperationView op = env.m.runs.continueOffer(m.c(), a.offer().offerId(), env.clock.instant());
-            env.clock.set(a.offer().deadline().minusMillis(early));     // the confirmation becomes visible exactly now
+            env.clock.set(a.offer().resolveBy().minusMillis(early));    // the confirmation becomes visible exactly now
             // due on the test clock (the database's now() is wall-clock time and says nothing about the test clock)
             env.sql("UPDATE pe_coin_operation SET next_attempt_at = ? WHERE operation_id = ?",
                     java.time.OffsetDateTime.ofInstant(env.clock.instant().minusSeconds(3600), java.time.ZoneOffset.UTC), op.operationId());
             env.m.payments.process(op.operationId());                   // before any sweep
             String runState = env.scalar("SELECT state FROM pe_run WHERE run_id = ?", m.runId());
             if (early == 0) {
-                assertEquals("FINISHED", runState, "confirmation recorded at the deadline grants nothing");
+                assertEquals("FINISHED", runState, "confirmation recorded at resolveBy grants nothing");
                 assertEquals(1, env.count("SELECT count(*) FROM pe_coin_operation WHERE related_operation_id = ? AND type = 'REFUND'", op.operationId()));
             } else {
-                assertEquals("READY", runState, "confirmation 1 ms before the deadline grants the continue");
+                assertEquals("READY", runState, "confirmation 1 ms before resolveBy grants the continue, long after both offer deadlines");
                 assertEquals(0, env.count("SELECT count(*) FROM pe_coin_operation WHERE related_operation_id = ? AND type = 'REFUND'", op.operationId()));
             }
         }
@@ -220,8 +227,8 @@ class PaymentIT {
                 java.time.OffsetDateTime.ofInstant(env.clock.instant().minusSeconds(1), java.time.ZoneOffset.UTC), operationId);
     }
 
-    @Test void retryAfterTheOfferEndedNeverSendsAFreshDebit_unresolvedGoesToReview() {
-        // review of 716d889: attempt 1 timed out without reaching the provider; the retry runs after the offer deadline
+    @Test void retryAfterResolveByNeverSendsAFreshDebit_unresolvedGoesToReview() {
+        // review of 716d889: attempt 1 timed out without reaching the provider; the retry runs after the run stopped waiting
         Miss m = miss(0);
         ActivationView a = activateAfterFeedback(m);
         env.script(m.user(), "[{\"op\":\"charge\",\"outcome\":\"unknown_not_applied\"}]");
@@ -229,9 +236,9 @@ class PaymentIT {
         String id = op.operationId();
         assertEquals("UNKNOWN", env.scalar("SELECT status FROM pe_coin_operation WHERE operation_id = ?", id));
 
-        env.clock.set(a.offer().deadline().plusSeconds(5));
+        env.clock.set(a.offer().resolveBy().plusSeconds(5));
         due(id);
-        env.m.payments.process(id);                                    // provider: not found; offer over → no debit
+        env.m.payments.process(id);                                    // provider: not found; past resolveBy → no debit
         assertEquals(0, env.count("SELECT count(*) FROM pe_fake_wallet_tx WHERE provider_ref = ?", id), "no fresh debit after the offer ended");
         assertEquals("UNKNOWN", env.scalar("SELECT status FROM pe_coin_operation WHERE operation_id = ?", id), "still confirming nothing landed");
         assertEquals("FINISHED", env.scalar("SELECT state FROM pe_run WHERE run_id = ?", m.runId()));
@@ -254,10 +261,10 @@ class PaymentIT {
     @Test void anEarlierAttemptLandingAfterTheOfferEndedIsRefundedNotRepeated() {
         Miss m = miss(0);
         ActivationView a = activateAfterFeedback(m);
-        long lateMs = java.time.Duration.between(env.clock.instant(), a.offer().deadline()).toMillis() + 10_000;
-        env.script(m.user(), "[{\"op\":\"charge\",\"outcome\":\"late_success\",\"late_ms\":" + lateMs + "}]");   // debited, visible 10 s after the deadline
+        long lateMs = java.time.Duration.between(env.clock.instant(), a.offer().resolveBy()).toMillis() + 10_000;
+        env.script(m.user(), "[{\"op\":\"charge\",\"outcome\":\"late_success\",\"late_ms\":" + lateMs + "}]");   // debited, visible 10 s after resolveBy
         String id = env.m.runs.continueOffer(m.c(), a.offer().offerId(), env.clock.instant()).operationId();
-        env.clock.set(a.offer().deadline().plusSeconds(12));
+        env.clock.set(a.offer().resolveBy().plusSeconds(12));
         due(id);
         env.m.payments.process(id);
         env.drainLedgerFully();
@@ -356,15 +363,19 @@ class PaymentIT {
         env.rebuild();
         env.drainLedger();
         env.drainLedger();
-        assertEquals(126, env.walletBalance(u), "checkpoint 5 + streak 1, each once");
+        assertEquals(125, env.walletBalance(u), "checkpoint 5 delivered after the crash; the daily reward waits for its claim");
+        env.m.dailyRewards.claim(c);
+        env.m.dailyRewards.claim(c);                                     // a repeated claim credits nothing more
+        env.drainLedger();
+        assertEquals(126, env.walletBalance(u), "checkpoint 5 + daily reward 1, each once");
 
         // a refund the provider applied but whose answer was lost
         Miss m = miss(0);
         ActivationView a = activateAfterFeedback(m);
         env.script(m.user(), "[{\"op\":\"charge\",\"outcome\":\"unknown_applied\"},{\"op\":\"refund\",\"outcome\":\"unknown_applied\"}]");
         OperationView op = env.m.runs.continueOffer(m.c(), a.offer().offerId(), env.clock.instant());
-        env.clock.set(a.offer().deadline());
-        env.m.deadlines.sweep(100);                                      // unconfirmed at the deadline → run ends
+        env.clock.set(a.offer().resolveBy());
+        env.m.deadlines.sweep(100);                                      // unconfirmed at resolveBy → run ends
         env.drainLedger();                                               // charge confirmed late → refund sent, answer lost
         env.rebuild();
         env.clock.advance(5_000);

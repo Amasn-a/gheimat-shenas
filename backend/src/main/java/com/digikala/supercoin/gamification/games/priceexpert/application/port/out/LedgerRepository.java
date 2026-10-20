@@ -20,6 +20,10 @@ public interface LedgerRepository {
     List<CoinOperation> operationsOfRun(String runId);
     Optional<CoinOperation> refundOf(String chargeOperationId);
     Optional<CoinOperation> streakRewardOf(String userId, LocalDate capDay);
+    /** Daily (streak) rewards earned and not yet claimed, oldest day first, row-locked for the claim. */
+    List<CoinOperation> lockClaimableStreakRewards(String userId);
+    /** The streak rewards of the player's most recent claim (one claim may cover several unclaimed days). */
+    List<CoinOperation> latestStreakClaim(String userId);
 
     /** Highest cap effective on the date; inserts {@code currentCap} if the date has no row yet. */
     int capHighWater(LocalDate date, int currentCap, Instant now);

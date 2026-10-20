@@ -137,8 +137,8 @@ public final class JdbcRunRepository implements RunRepository {
     // ------------------------------------------------------------------ offers
 
     @Override public void insertOffer(Offer o) {
-        update("INSERT INTO pe_offer (offer_id, run_id, question_id, state, cost, opened_at, deadline, operation_id, closed_at) VALUES (?,?,?,?,?,?,?,?,?)",
-                o.offerId, o.runId, o.questionId, o.state, o.cost, o.openedAt, o.deadline, nz(o.operationId), nz(o.closedAt));
+        update("INSERT INTO pe_offer (offer_id, run_id, question_id, state, cost, opened_at, deadline, accept_deadline, operation_id, closed_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                o.offerId, o.runId, o.questionId, o.state, o.cost, o.openedAt, o.deadline, o.acceptDeadline, nz(o.operationId), nz(o.closedAt));
     }
 
     @Override public Optional<Offer> findOffer(String offerId) {
@@ -150,8 +150,16 @@ public final class JdbcRunRepository implements RunRepository {
     }
 
     @Override public void updateOffer(Offer o) {
-        update("UPDATE pe_offer SET state = ?, operation_id = ?, closed_at = ? WHERE offer_id = ?",
-                o.state, nz(o.operationId), nz(o.closedAt), o.offerId);
+        update("UPDATE pe_offer SET state = ?, operation_id = ?, closed_at = ?, purchase_received_at = ? WHERE offer_id = ?",
+                o.state, nz(o.operationId), nz(o.closedAt), nz(o.purchaseReceivedAt), o.offerId);
+    }
+
+    @Override public boolean recordPurchaseReceipt(String offerId, String userId, String deviceId, Instant receivedAt) {
+        return update("""
+            UPDATE pe_offer o SET purchase_received_at = ?
+            WHERE o.offer_id = ? AND o.state = 'OPEN' AND o.purchase_received_at IS NULL AND ? <= o.accept_deadline
+              AND EXISTS (SELECT 1 FROM pe_run r WHERE r.run_id = o.run_id AND r.user_id = ? AND r.device_id = ? AND r.state = 'OFFER_OPEN')""",
+                receivedAt, offerId, receivedAt, userId, deviceId) == 1;
     }
 
     @Override public Optional<Offer> latestOfferOfRun(String runId) {
@@ -224,6 +232,8 @@ public final class JdbcRunRepository implements RunRepository {
         o.cost = rs.getInt("cost");
         o.openedAt = ts(rs, "opened_at");
         o.deadline = ts(rs, "deadline");
+        o.acceptDeadline = ts(rs, "accept_deadline");
+        o.purchaseReceivedAt = ts(rs, "purchase_received_at");
         o.operationId = rs.getString("operation_id");
         o.closedAt = ts(rs, "closed_at");
         return o;

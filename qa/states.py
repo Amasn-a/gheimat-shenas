@@ -1,8 +1,9 @@
 """Scenario QA beyond the happy path, against the running development backend (fake DigiCoin, dev login) at 375×812.
+Light theme only (brief 2026-10-20): the browser reports a dark system theme and the game must stay light.
 Each scenario uses its own player and saves screenshots; the run prints the views reached and fails on page errors.
 Hidden prices come only from qa/oracle.py (test-only DB read). Admin actions go through the real admin API.
 
-usage: python3 qa/states.py [outdir] [theme] [scenario ...]"""
+usage: python3 qa/states.py [outdir] [scenario ...]"""
 import asyncio, json, os, sys, time, uuid, urllib.request
 from playwright.async_api import async_playwright
 sys.path.insert(0, os.path.dirname(__file__))
@@ -10,8 +11,8 @@ import oracle
 
 BASE = os.environ.get("PE_BASE", "http://127.0.0.1:8080")
 OUT = sys.argv[1] if len(sys.argv) > 1 else "/tmp/qa-states"
-THEME = sys.argv[2] if len(sys.argv) > 2 else "light"
-ONLY = set(sys.argv[3:])
+THEME = "light"
+ONLY = set(sys.argv[2:])
 os.makedirs(OUT, exist_ok=True)
 log, errors = [], []
 
@@ -56,14 +57,14 @@ async def wait_view(pg, prefix, timeout=8000):
 SCROLL_AUDIT = """() => { const out = []; const se = document.scrollingElement;
   if (se.scrollHeight > innerHeight + 1 || se.scrollWidth > innerWidth + 1) out.push('page');
   document.querySelectorAll('#app *').forEach(el => { const cs = getComputedStyle(el);
-    if (el.closest('[data-scroll]') || el.closest('.mo-layer')) return;
+    if (el.closest('[data-hscroll]') || el.closest('.mo-layer')) return;
     if ((el.scrollHeight > el.clientHeight + 1 && ['auto', 'scroll'].includes(cs.overflowY)) || (el.scrollWidth > el.clientWidth + 1 && ['auto', 'scroll'].includes(cs.overflowX))) out.push(el.className || el.tagName); });
   return out; }"""
 
 
 async def shot(pg, name):
     await pg.screenshot(path=f"{OUT}/{name}-{THEME}.png")
-    sc = await pg.evaluate(SCROLL_AUDIT)                           # UX-4 / T45: no player scrolling outside the product list
+    sc = await pg.evaluate(SCROLL_AUDIT)                           # UX-4 / T45: no player scrolling outside the product history
     if sc: errors.append(f"{name}: unexpected scroll {sc}")
     log.append(f"  {name}: {await view(pg)}")
 
@@ -76,16 +77,17 @@ async def answer(pg, user, correct):
 
 
 async def page(b, user, device=None, reduced=False):
-    ctx = await b.new_context(viewport={"width": 375, "height": 812}, device_scale_factor=2, color_scheme=THEME,
+    http("POST", f"/dev/v1/price-expert/player/u_{user}", {"onboarded": True})   # the onboarding has its own checks (qa/brief.py)
+    ctx = await b.new_context(viewport={"width": 375, "height": 812}, device_scale_factor=2, color_scheme="dark",
                               reduced_motion="reduce" if reduced else "no-preference")
     pg = await ctx.new_page()
     pg.on("pageerror", lambda e: errors.append(f"{user}: {e}"))
     pg.on("console", lambda m: m.type == "error" and "Failed to load resource" not in m.text and errors.append(f"{user}: {m.text}"))
-    q = f"user={user}&panel=0&theme={THEME}" + (f"&device={device}" if device else "")
+    q = f"user={user}&panel=0" + (f"&device={device}" if device else "")
     await pg.goto(f"{BASE}/play/dev.html?{q}")
-    v = await wait_view(pg, ("G02.FIRST", "G01.READY", "G01.QUOTA", "G01.ACTIVE", "G11."))
-    if v == "G02.FIRST":
-        await act(pg, "help-done")
+    v = await wait_view(pg, ("G01.READY", "G01.QUOTA", "G01.ACTIVE", "G11.", "G01.DAILY"))
+    if v.startswith("G01.DAILY"):
+        await act(pg, "daily-close")
     await wait_view(pg, ("G01.READY", "G01.QUOTA", "G11.", "G01.ACTIVE"))
     return pg
 
@@ -113,8 +115,9 @@ async def s_timeout(b):
     await wait_view(pg, "G03.QUESTION_ACTIVE.LOW_TIME", 10000)
     log.append(f"  low-time state after {time.time() - t0:.1f}s")
     await shot(pg, "timeout-1-low-time")
-    await wait_view(pg, "G03.TIMEOUT", 6000)
-    log.append(f"  timeout shown {time.time() - t0:.2f}s after the question opened (input locks at 10.5 s)")
+    await wait_view(pg, "G03.TIME_UP_PENDING", 6000); await shot(pg, "timeout-1b-time-up-pending")
+    await wait_view(pg, "G03.TIMEOUT", 9000)
+    log.append(f"  timeout shown {time.time() - t0:.2f}s after LOW_TIME (input locks at 10 s; the server settles after 12.5 s + grace)")
     await pg.wait_for_timeout(300); await shot(pg, "timeout-2-feedback")
     await wait_view(pg, "G05.OFFER", 6000); await shot(pg, "timeout-3-offer")
     await act(pg, "skip")
@@ -153,32 +156,38 @@ async def s_charge_failed(b):
 
 
 async def s_charge_unknown(b):
+    """Admitted purchase never confirmed in time: the run waits past both offer deadlines (10 s visible, 15 s arrival)
+    until resolveBy (arrival deadline + 60 s, PROPOSED), ends unconfirmed, and the debit landing later is refunded once."""
     u = user("cu"); pg = await page(b, u)
     await miss_to_offer(pg, u)
-    # every send (first and the safe re-sends after a "not found" query) times out without applying anything
-    dev(u, {"script": [{"op": "charge", "outcome": "unknown_not_applied"}] * 12})
+    dev(u, {"script": [{"op": "charge", "outcome": "late_success", "late_ms": 80000}]})
     await act(pg, "continue")
     await wait_view(pg, "G06.PENDING", 3000); await shot(pg, "charge-unknown-1-pending")
     await wait_view(pg, "G06.UNKNOWN", 8000); await shot(pg, "charge-unknown-2-unknown")
-    await wait_view(pg, "G06.FAILED_END", 15000); await pg.wait_for_timeout(300); await shot(pg, "charge-unknown-3-ended")
-    bal = http("GET", f"/dev/v1/price-expert/fake-coin/u_{u}")["balance"]
-    log.append(f"  balance after an unconfirmed (not applied) charge: {bal} (expected 120 + rewards, never -10)")
-
-
-async def s_charge_late(b):
-    u = user("cl"); pg = await page(b, u)
-    await miss_to_offer(pg, u)
-    dev(u, {"script": [{"op": "charge", "outcome": "late_success", "late_ms": 12000}]})
-    await act(pg, "continue")
-    await wait_view(pg, "G06.FAILED_END", 16000); await pg.wait_for_timeout(300); await shot(pg, "charge-late-1-ended-unconfirmed")
-    await wait_view(pg, "G06.REFUNDED", 25000); await shot(pg, "charge-late-2-refunded")   # a gate: the refund must reach the screen
+    await pg.wait_for_timeout(9000)
+    assert (await view(pg)) == "G06.UNKNOWN", "past the visible and arrival deadlines an admitted purchase still waits: " + await view(pg)
+    await wait_view(pg, "G06.FAILED_END", 75000); await pg.wait_for_timeout(300); await shot(pg, "charge-unknown-3-ended-unconfirmed")
+    await wait_view(pg, "G06.REFUNDED", 90000); await shot(pg, "charge-unknown-4-refunded")   # reconciliation backs off to 60 s between queries
     t = time.time()
     while time.time() - t < 25:
         bal = http("GET", f"/dev/v1/price-expert/fake-coin/u_{u}")["balance"]
         if bal >= 120: break
         time.sleep(1)
-    log.append(f"  balance after late success + refund: {bal} (expected ≥ 120: charge refunded once)")
+    log.append(f"  balance after a debit confirmed past resolveBy + refund: {bal} (expected ≥ 120: refunded once)")
     assert bal >= 120
+
+
+async def s_charge_late(b):
+    """Tap before the visible zero, confirmation 12 s later (after the visible zero): the purchase applies."""
+    u = user("cl"); pg = await page(b, u)
+    await miss_to_offer(pg, u)
+    dev(u, {"script": [{"op": "charge", "outcome": "late_success", "late_ms": 12000}]})
+    await act(pg, "continue")
+    await wait_view(pg, "G06.UNKNOWN", 9000); await shot(pg, "charge-late-1-waiting-past-zero")
+    await wait_view(pg, ("G06.SUCCESS", "G03.READY"), 20000); await pg.wait_for_timeout(500); await shot(pg, "charge-late-2-confirmed")
+    bal = http("GET", f"/dev/v1/price-expert/fake-coin/u_{u}")["balance"]
+    log.append(f"  balance after a late-confirmed admitted purchase: {bal} (expected 110: one debit, extra life granted)")
+    assert bal == 110
 
 
 async def s_replacement(b):

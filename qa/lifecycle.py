@@ -1,13 +1,20 @@
 """Client lifecycle regressions from the strict review of b023340, in Chromium against the running development backend.
 Each check drives the real player modules (dev.html) and fails the run on a regression:
   checkpoint_reset (#4)  a checkpoint due when the run ends must not block reveal in the next run
-  stale_products (#10)   a late products response must not replace the screen of a newer run
+  stale_products (#10)   a late product-history response must not change the screen of a newer run
   share_busy (#10)       an abandoned share request does not leave the share button disabled
   replay_clock (#11)     an idempotent replay must not move the server clock estimate
   body_timeout (#12)     a stalled response body times out; a malformed success is an error
   offer_per_miss (#13)   with a continue cap of 2, the second miss gets its own offer
   copy_state (#28)       copy feedback follows the clipboard result and is visible
   quota_reset (#29)      the quota countdown ticks and the server is asked again at the reset
+ brief 2026-10-20:
+  cp_once                the checkpoint celebration is mounted once: re-renders and recovery never replay it
+  answer_at_zero         an answer sent at ~9.6 s stays «processing» through the visible zero and is evaluated
+  pick_vs_expiry         a selection and the visible zero in the same instant make exactly one local transition
+  daily_double_tap       two taps on «دریافت کن» send one claim
+  end_back               Back on the End Screen (on screen or the device's) goes to the start; no run, no payment
+  light_only             a dark system theme cannot switch the game to dark
 
 usage: python3 qa/lifecycle.py [check ...]"""
 import asyncio, json, os, sys, time, uuid, urllib.request
@@ -47,13 +54,14 @@ async def wait_view(pg, prefixes, timeout=10000):
     raise AssertionError(f"timeout waiting for {prefixes}, at {await view(pg)}")
 
 
-async def page(b, user):
-    ctx = await b.new_context(viewport={"width": 375, "height": 812})
+async def page(b, user, scheme="light"):
+    http("POST", f"/dev/v1/price-expert/player/u_{user}", {"onboarded": True})
+    ctx = await b.new_context(viewport={"width": 375, "height": 812}, color_scheme=scheme)
     pg = await ctx.new_page()
     pg.errors = []
     pg.on("pageerror", lambda e: pg.errors.append(str(e)))
     await pg.goto(f"{BASE}/play/dev.html?user={user}&panel=0")
-    await wait_view(pg, "G02.FIRST"); await pg.click('[data-act="help-done"]'); await wait_view(pg, "G01.READY")
+    await wait_view(pg, "G01.READY")
     await pg.evaluate("async () => { window.G = await import('/play/src/game.js'); window.API = await import('/play/src/api.js'); window.CLK = await import('/play/src/clock.js'); }")
     return pg
 
@@ -71,6 +79,8 @@ async def c_checkpoint_reset(b):
     await pg.evaluate("G.S.ui.cpDue = { checkpointId: 'cp_3', requiredCorrect: 3 }")   # the run ends inside the promotion delay
     await pg.evaluate("G.leaveConfirmed()"); await wait_view(pg, "G07.")
     await pg.wait_for_timeout(400)
+    await pg.click('[data-act="to-start"]'); await wait_view(pg, ("G01.READY", "G01.DAILY"))
+    if (await view(pg)).startswith("G01.DAILY"): await pg.click('[data-act="daily-close"]')
     await pg.click('[data-act="start"]'); await wait_view(pg, "G03.READY"); await pg.wait_for_timeout(400)
     await pg.click('[data-act="reveal"]')
     await wait_view(pg, "G03.QUESTION_ACTIVE", 6000)
@@ -79,16 +89,16 @@ async def c_checkpoint_reset(b):
 
 async def c_stale_products(b):
     pg = await page(b, "ls" + uuid.uuid4().hex[:6])
-    await to_result(pg)
     async def slow(route):
         await asyncio.sleep(2.5); await route.continue_()
     await pg.route("**/runs/*/products", slow)
-    await pg.click('[data-act="products"]'); await wait_view(pg, "G08.LOADING")
-    await pg.click('[data-act="back-result"]'); await wait_view(pg, "G07.")
+    await to_result(pg)                                           # the history request is still running
+    await pg.click('[data-act="to-start"]'); await wait_view(pg, ("G01.READY", "G01.DAILY"))
+    if (await view(pg)).startswith("G01.DAILY"): await pg.click('[data-act="daily-close"]')
     await pg.click('[data-act="start"]'); await wait_view(pg, "G03.READY")
-    await pg.wait_for_timeout(3500)                              # the old products response arrives now
+    await pg.wait_for_timeout(3500)                              # the old history response arrives now
     v = await view(pg)
-    assert v.startswith("G03."), f"a stale products response replaced the new run: {v}"
+    assert v.startswith("G03."), f"a stale history response replaced the new run: {v}"
     log.append(f"  new run kept its screen: {v}")
 
 
@@ -99,7 +109,9 @@ async def c_share_busy(b):
         await asyncio.sleep(2.5); await route.continue_()
     await pg.route("**/runs/*/share", slow)
     await pg.click('[data-act="share"]'); await pg.wait_for_timeout(200)
-    await pg.click('[data-act="start"]'); await wait_view(pg, "G03.READY")   # leave the result while the share request runs
+    await pg.click('[data-act="to-start"]'); await wait_view(pg, ("G01.READY", "G01.DAILY"))   # leave the result while the share request runs
+    if (await view(pg)).startswith("G01.DAILY"): await pg.click('[data-act="daily-close"]')
+    await pg.click('[data-act="start"]'); await wait_view(pg, "G03.READY")
     await pg.wait_for_timeout(3000)
     await pg.evaluate("G.leaveConfirmed()"); await wait_view(pg, "G07."); await pg.wait_for_timeout(400)
     assert await pg.locator('[data-act="share"]').count() == 1, "share stayed disabled after an abandoned request"
@@ -189,7 +201,117 @@ async def c_quota_reset(b):
     log.append(f"  countdown {t1} → {t2}, then the server's quota")
 
 
-CHECKS = [c_checkpoint_reset, c_stale_products, c_share_busy, c_replay_clock, c_body_timeout, c_offer_per_miss, c_copy_state, c_quota_reset]
+# ------------------------------------------------------------------------------------------------ brief 2026-10-20
+
+async def reach_checkpoint(pg, u):
+    await pg.click('[data-act="start"]'); await wait_view(pg, "G03.READY")
+    for i in range(3):
+        await wait_view(pg, "G03.READY"); await pg.wait_for_timeout(400)
+        await pg.click('[data-act="reveal"]'); await wait_view(pg, "G03.QUESTION_ACTIVE"); await pg.wait_for_timeout(200)
+        await pg.click(f'[data-act="ans-{oracle.choice("u_" + u, True)}"]')
+    await wait_view(pg, "G04.REACHED", 8000)
+
+
+async def c_cp_once(b):
+    u = "lk" + uuid.uuid4().hex[:6]
+    pg = await page(b, u)
+    await pg.evaluate("""() => { window.__mounts = 0; new MutationObserver(ms => ms.forEach(m => m.addedNodes.forEach(n => { if (n.classList && n.classList.contains('v3-cp')) window.__mounts++; })))
+        .observe(document.querySelector('.pe-cphost'), { childList: true }); }""")
+    await reach_checkpoint(pg, u)
+    same = await pg.evaluate("""async () => { const a = document.querySelector('.v3-cp'); G.render(); G.render(); window.dispatchEvent(new Event('online'));
+        await new Promise(r => setTimeout(r, 1600)); return a === document.querySelector('.v3-cp'); }""")   # incl. the 1.2 s guard step that used to re-render it
+    assert same, "a re-render rebuilt the checkpoint overlay (its entrance replays)"
+    await pg.wait_for_timeout(300); await pg.click(".v3-cp"); await wait_view(pg, "G03.READY")
+    await pg.evaluate("() => document.dispatchEvent(new Event('visibilitychange'))")   # recovery reads the run again
+    await pg.wait_for_timeout(1200)
+    mounts = await pg.evaluate("window.__mounts")
+    assert mounts == 1, f"celebration mounted {mounts} times"
+    await pg.reload(); await wait_view(pg, ("G01.ACTIVE", "G03."))       # a reload resumes without celebrating again
+    if (await view(pg)).startswith("G01.ACTIVE"): await pg.click('[data-act="resume"]'); await wait_view(pg, "G03.READY", 6000)
+    await pg.wait_for_timeout(1200)
+    assert (await view(pg)) == "G03.READY", await view(pg)
+    log.append("  one mount; re-renders, a reconnect, a visibility recovery and a reload never replay it")
+
+
+async def c_answer_at_zero(b):
+    u = "lz" + uuid.uuid4().hex[:6]
+    pg = await page(b, u)
+    await pg.click('[data-act="start"]'); await wait_view(pg, "G03.READY"); await pg.wait_for_timeout(300)
+    await pg.click('[data-act="reveal"]'); await wait_view(pg, "G03.QUESTION_ACTIVE")
+    async def slow(route):
+        await asyncio.sleep(2.2); await route.continue_()               # arrives ~11.8 s after t0: admitted (≤ 12.5 s)
+    await pg.route("**/questions/*/answer", slow)
+    await pg.wait_for_function("() => Date.parse(G.S.q.inputDeadline) - CLK.serverNow() < 400")
+    await pg.click(f'[data-act="ans-{oracle.choice("u_" + u, True)}"]')
+    seen = set()
+    for _ in range(40):
+        seen.add(await view(pg)); await pg.wait_for_timeout(50)
+        if (await view(pg)).startswith("G03.CORRECT"): break
+    final = await wait_view(pg, ("G03.CORRECT", "G03.TIMEOUT", "G03.WRONG"), 9000)
+    assert "G03.TIME_UP_PENDING" not in seen and final.startswith("G03.CORRECT"), f"views {seen} → {final}"
+    log.append(f"  processing through the visible zero ({sorted(seen)}) → {final}")
+
+
+async def c_pick_vs_expiry(b):
+    u = "lx" + uuid.uuid4().hex[:6]
+    pg = await page(b, u)
+    await pg.click('[data-act="start"]'); await wait_view(pg, "G03.READY"); await pg.wait_for_timeout(300)
+    await pg.click('[data-act="reveal"]'); await wait_view(pg, "G03.QUESTION_ACTIVE")
+    r = await pg.evaluate("""() => new Promise(done => {
+        const views = []; new MutationObserver(() => views.push(document.getElementById('app').dataset.view)).observe(document.getElementById('app'), { attributes: true, attributeFilter: ['data-view'] });
+        let sent = 0; const real = window.fetch; window.fetch = (u, o) => { if (String(u).includes('/answer')) sent++; return real(u, o); };
+        const spin = () => { const rem = Date.parse(G.S.q.inputDeadline) - CLK.serverNow();
+          if (rem > 2) return requestAnimationFrame(spin);
+          G.answer('higher'); setTimeout(() => done({ views: [...new Set(views)], sent, pick: G.S.q && G.S.q.pick, locked: G.S.q && G.S.q.locked }), 600); };
+        spin(); })""")
+    both = "G03.ANSWER_PENDING" in r["views"] and "G03.TIME_UP_PENDING" in r["views"]
+    assert not both and r["sent"] <= 1, f"two transitions for one question: {r}"
+    log.append(f"  one transition at the boundary: {r}")
+
+
+async def c_daily_double_tap(b):
+    u = "ld" + uuid.uuid4().hex[:6]
+    http("POST", f"/dev/v1/price-expert/player/u_{u}", {"onboarded": True, "attended_days": 2})
+    ctx = await b.new_context(viewport={"width": 375, "height": 812}); pg = await ctx.new_page()
+    claims = []
+    pg.on("request", lambda r: claims.append(r.url) if r.method == "POST" and r.url.endswith("/daily-reward/claim") else None)
+    await pg.goto(f"{BASE}/play/dev.html?user={u}&panel=0")
+    await wait_view(pg, "G01.DAILY_REWARD.CLAIMABLE")
+    await pg.evaluate("() => { const b = document.querySelector('[data-act=daily-claim]'); b.click(); b.click(); }")
+    await wait_view(pg, "G01.DAILY_REWARD.CLAIMED", 6000)
+    assert len(claims) == 1, f"{len(claims)} claim requests"
+    bal = http("GET", f"/dev/v1/price-expert/fake-coin/u_{u}")["balance"]
+    log.append(f"  one claim request; balance {bal}")
+
+
+async def c_end_back(b):
+    u = "le" + uuid.uuid4().hex[:6]
+    pg = await page(b, u)
+    await to_result(pg)
+    posts = []
+    pg.on("request", lambda r: posts.append(r.url) if r.method == "POST" else None)
+    await pg.click('[data-act="to-start"]'); await wait_view(pg, ("G01.READY", "G01.DAILY"))
+    if (await view(pg)).startswith("G01.DAILY"): await pg.click('[data-act="daily-close"]')
+    assert not any("/runs" in p or "/offers" in p for p in posts), f"Back created something: {posts}"
+    after_back = list(posts)
+    assert await pg.evaluate("G.S.run === null && G.S.q === null && G.S.result === null"), "local run state kept"
+    await pg.click('[data-act="start"]'); await wait_view(pg, "G03.READY")
+    await pg.evaluate("G.leaveConfirmed()"); await wait_view(pg, "G07."); await pg.wait_for_timeout(600)
+    await pg.go_back(); await wait_view(pg, ("G01.READY", "G01.DAILY", "G01.QUOTA"), 6000)   # the device's Back does the same
+    log.append(f"  UI Back and device Back → {await view(pg)}; POSTs caused by Back: {after_back}")
+
+
+async def c_light_only(b):
+    pg = await page(b, "ll" + uuid.uuid4().hex[:6], scheme="dark")
+    r = await pg.evaluate("""() => ({ theme: document.documentElement.dataset.theme, scheme: getComputedStyle(document.documentElement).colorScheme,
+        card: getComputedStyle(document.documentElement).getPropertyValue('--card').trim(), ink: getComputedStyle(document.documentElement).getPropertyValue('--ink').trim(),
+        meta: document.querySelector('meta[name=color-scheme]').content })""")
+    assert r["theme"] == "light" and r["card"].upper() == "#FFFFFF" and r["ink"].upper() == "#1E2129" and "only light" in r["meta"], r
+    log.append(f"  dark system theme → {r}")
+
+
+CHECKS = [c_checkpoint_reset, c_stale_products, c_share_busy, c_replay_clock, c_body_timeout, c_offer_per_miss, c_copy_state, c_quota_reset,
+          c_cp_once, c_answer_at_zero, c_pick_vs_expiry, c_daily_double_tap, c_end_back, c_light_only]
 
 
 async def main():

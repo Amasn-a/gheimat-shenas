@@ -8,13 +8,11 @@ const user = params.get('user') || store.get('pe.dev.user') || 'player1';
 store.set('pe.dev.user', user);
 const device = params.get('device') || store.get('pe.dev.device') || crypto.randomUUID();
 store.set('pe.dev.device', device);
-let themeOverride = params.get('theme');
 
 configureHost({
   getToken: async () => 'dev.' + user,          // DEVELOPMENT token format accepted only by the dev backend
   refreshToken: async () => 'dev.' + user,
   deviceId: () => device,
-  theme: () => themeOverride || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'),
   haptic: kind => console.info('[dev host] haptic', kind),
   openProduct: async url => { console.info('[dev host] open product', url); return true; },
   close: () => console.info('[dev host] close WebView'),
@@ -37,8 +35,8 @@ panel.innerHTML = `
   <button id="dvChargeGo">script</button><br>
   balance read <select id="dvBalRead"><option value="">normal</option><option value="unreadable">unreadable</option></select> <button id="dvBalReadGo">script</button>
 </fieldset>
-<fieldset><legend>View</legend>
-  theme <select id="dvTheme"><option value="">follow system</option><option value="light">light</option><option value="dark">dark</option></select>
+<fieldset><legend>Player fixtures (backend, account level)</legend>
+  <button id="dvOnb">reset onboarding</button> <button id="dvDaily">3 attended days + unclaimed reward</button>
 </fieldset>`;
 document.body.appendChild(panel);
 if (params.get('panel') === '0') panel.hidden = true;
@@ -50,7 +48,8 @@ $('#dvNewDevice').onclick = () => { store.set('pe.dev.device', crypto.randomUUID
 $('#dvBalGo').onclick = () => dev('/fake-coin/u_' + user, { balance: Number($('#dvBal').value) });
 $('#dvChargeGo').onclick = () => { const o = $('#dvCharge').value; if (o) dev('/fake-coin/u_' + user, { script: [{ op: 'charge', outcome: o, late_ms: 15000 }] }); };
 $('#dvBalReadGo').onclick = () => { const o = $('#dvBalRead').value; if (o) dev('/fake-coin/u_' + user, { script: [{ op: 'balance', outcome: o }] }); };
-$('#dvTheme').onchange = e => { themeOverride = e.target.value || null; document.documentElement.setAttribute('data-theme', themeOverride || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')); };
+$('#dvOnb').onclick = () => dev('/player/u_' + user, { onboarded: false }).then(() => location.reload());
+$('#dvDaily').onclick = () => dev('/player/u_' + user, { attended_days: 3 }).then(() => location.reload());
 dev('/fake-coin/u_' + user).then(r => { if (r.balance != null) $('#dvBal').value = r.balance; }).catch(() => {});
 setInterval(() => { const v = document.getElementById('app').dataset.view; if (v) $('#dvState').textContent = v; }, 200);
 

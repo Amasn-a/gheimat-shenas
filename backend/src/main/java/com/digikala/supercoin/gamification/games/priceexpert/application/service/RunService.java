@@ -267,11 +267,12 @@ public final class RunService {
             o.questionId = run.missQuestionId;
             o.state = OfferState.OPEN;
             o.cost = cost;
-            o.openedAt = now;
-            o.deadline = now.plusMillis(cfg.offerMs());
+            o.openedAt = now;                                                // the authoritative offer start
+            o.deadline = now.plusMillis(cfg.offerMs());                      // visible decision window
+            o.acceptDeadline = now.plusMillis(cfg.offerAcceptMs());          // purchase arrival deadline (inclusive)
             ctx.runs().insertOffer(o);
             run.state = RunState.OFFER_OPEN;
-            run.nextDeadlineAt = o.deadline;
+            run.nextDeadlineAt = o.acceptDeadline.plusMillis(cfg.timeoutGraceMs());   // expiry settles a recorded receipt first
             ctx.runs().updateRun(run);
             Map<String, Object> e = Map.of("offer_id", o.offerId, "run_id", run.runId, "cost", cost, "deadline", o.deadline.toString());
             ctx.tx().afterCommit(() -> ctx.events().emit("continue_offer_shown", "offer:" + o.offerId, e));
@@ -283,52 +284,40 @@ public final class RunService {
         Offer o = created;
         if (o == null && (run.state == RunState.OFFER_OPEN || run.state == RunState.PAYMENT_PENDING))
             o = ctx.runs().latestOfferOfRun(run.runId).orElse(null);
-        return new ActivationView(o == null ? null : ViewAssembler.offerView(o), balance, run.noOfferReason,
+        return new ActivationView(o == null ? null : ViewAssembler.offerView(o, ctx.config(run.configVersion)), balance, run.noOfferReason,
                 views.run(run, player.record, caller.deviceId()), ctx.now());
     }
 
     // ------------------------------------------------------------------------------------------------ continue (charge)
 
+    /**
+     * Purchase of an extra life. Admission is decided by the trusted ARRIVAL time against the offer's accept deadline
+     * (offer start + 15 s, inclusive), never by when the request gets its locks: the arrival is recorded first in its own
+     * short transaction (receipt-first, as for answers), and the expiry path turns a recorded receipt into the operation
+     * instead of expiring the offer. Once admitted, the charge may finish after both deadlines; the run waits for its
+     * definitive outcome until the offer's resolveBy instant. One live operation per offer, whatever the request key.
+     */
     public OperationView continueOffer(Caller caller, String offerId, Instant receivedAt) {
+        ctx.tx().run(() -> ctx.runs().recordPurchaseReceipt(offerId, caller.userId(), caller.deviceId(), receivedAt));
         Result<String> r = ctx.tx().inTransaction(() -> {
             Instant now = ctx.now();
             Offer peek = ctx.runs().findOffer(offerId).orElseThrow(GameException::notFound);
-            Locked l = lockForCommand(caller, peek.runId, now);
+            Locked l = lockForCommand(caller, peek.runId, now);             // past the expiry: admits a recorded receipt
             Run run = l.run;
             Offer offer = ctx.runs().lockOffer(offerId).orElseThrow();
             if (offer.state == OfferState.PAYMENT_PENDING || offer.state == OfferState.GRANTED || offer.operationId != null && offer.state == OfferState.ENDED_UNCONFIRMED)
-                return Result.ok(offer.operationId);                         // one live operation per offer
+                return Result.ok(offer.operationId);                         // one live operation per offer: retries and other keys get it
             if (run.isFinished()) {
                 if (offer.state == OfferState.EXPIRED) return Result.error(stateError("OFFER_EXPIRED", run, l.player, caller));
                 return Result.error(finishedError(run, l.player, caller));
             }
             requireDevice(run, caller, l.player);
             if (offer.state != OfferState.OPEN || run.state != RunState.OFFER_OPEN) return Result.error(stateError("INVALID_STATE", run, l.player, caller));
-            if (!offer.openAt(receivedAt)) return Result.error(stateError("OFFER_EXPIRED", run, l.player, caller));
+            Instant arrival = offer.purchaseReceivedAt != null ? offer.purchaseReceivedAt : receivedAt;   // the first recorded arrival
+            if (!offer.admits(arrival)) return Result.error(stateError("OFFER_EXPIRED", run, l.player, caller));
             GameConfig cfg = ctx.config(run.configVersion);
             if (run.continuesUsed >= cfg.continueRule().cap()) return Result.error(stateError("CONTINUE_LIMIT_USED", run, l.player, caller));
-
-            CoinOperation op = new CoinOperation();
-            op.operationId = Ids.newId();
-            op.userId = run.userId;
-            op.runId = run.runId;
-            op.offerId = offer.offerId;
-            op.type = OperationType.CHARGE;
-            op.amount = offer.cost;                                          // cost snapshot of this offer, never from the client
-            op.status = OperationStatus.PENDING;
-            op.createdAt = now;
-            op.nextAttemptAt = now;                                          // the worker picks it up if this request dies after commit
-            op.giveUpAt = now.plusSeconds(72 * 3600);
-            ctx.ledger().insertOperation(op);
-            offer.state = OfferState.PAYMENT_PENDING;
-            offer.operationId = op.operationId;
-            ctx.runs().updateOffer(offer);
-            run.state = RunState.PAYMENT_PENDING;
-            run.nextDeadlineAt = offer.deadline;                             // the ring keeps running during G06 (R-39)
-            ctx.runs().updateRun(run);
-            Map<String, Object> e = Map.of("offer_id", offer.offerId, "operation_id", op.operationId);
-            ctx.tx().afterCommit(() -> ctx.events().emit("continue_requested", "continue_requested:" + op.operationId, e));
-            return Result.ok(op.operationId);
+            return Result.ok(deadlines.admitPurchase(run, offer, cfg, now));
         });
         String operationId = r.get();
         payments.process(operationId);                                       // immediate attempt; the worker covers crashes and UNKNOWN
@@ -344,8 +333,8 @@ public final class RunService {
             Locked l = lockForCommand(caller, peek.runId, now);
             Run run = l.run;
             Offer offer = ctx.runs().lockOffer(offerId).orElseThrow();
-            if (offer.state == OfferState.PAYMENT_PENDING)                   // a decision is already being processed
-                return Result.error(stateError("OPERATION_PENDING", run, l.player, caller));
+            if (offer.state == OfferState.PAYMENT_PENDING || offer.state == OfferState.OPEN && offer.purchaseReceivedAt != null)
+                return Result.error(stateError("OPERATION_PENDING", run, l.player, caller));   // a purchase was already admitted
             if (run.isFinished() || offer.state != OfferState.OPEN) return Result.ok(views.run(run, l.player.record, caller.deviceId()));
             requireDevice(run, caller, l.player);
             settlement.finish(run, l.player, FinishReason.skipped, now);
@@ -361,7 +350,8 @@ public final class RunService {
             Run run = l.run;
             if (run.isFinished()) return Result.ok(views.run(run, l.player.record, caller.deviceId()));
             requireDevice(run, caller, l.player);
-            if (run.state == RunState.PAYMENT_PENDING)                       // back is blocked while a payment is checked
+            if (run.state == RunState.PAYMENT_PENDING || run.state == RunState.OFFER_OPEN && ctx.runs().latestOfferOfRun(run.runId)
+                    .map(o -> o.purchaseReceivedAt != null).orElse(false))      // back is blocked while a purchase is processed
                 return Result.error(stateError("OPERATION_PENDING", run, l.player, caller));
             FinishReason reason = (run.state == RunState.OFFER_OPEN || run.state == RunState.AWAITING_OFFER) ? FinishReason.skipped : FinishReason.left;
             settlement.finish(run, l.player, reason, now);
@@ -384,8 +374,8 @@ public final class RunService {
         if (v.status().equals("pending")) return v;
         // settled: the provider balance is read outside the transaction (never used to authorise anything); unknown → null
         java.util.OptionalLong b = ctx.coin().balance(caller.userId());
-        return b.isEmpty() ? v : new OperationView(v.operationId(), v.status(), v.chargeStatus(), v.refundStatus(), v.chargedAmount(),
-                v.refundedAmount(), b.getAsLong(), v.run(), v.serverTime());
+        return b.isEmpty() ? v : new OperationView(v.operationId(), v.offerId(), v.status(), v.definitive(), v.chargeStatus(), v.refundStatus(),
+                v.chargedAmount(), v.refundedAmount(), b.getAsLong(), v.admittedAt(), v.resolveBy(), v.run(), v.serverTime());
     }
 
     private OperationView operationView(Caller caller, String operationId) {
@@ -406,8 +396,10 @@ public final class RunService {
             else if (offer.state == OfferState.ENDED_UNCONFIRMED || offer.state == OfferState.CANCELLED || l.run.isFinished()) status = "expired_unconfirmed";
             else status = "pending";
             int refunded = refund.filter(x -> x.status == OperationStatus.SUCCEEDED).map(x -> x.amount).orElse(0);
-            return new OperationView(op.operationId, status, chargeStatus, refundStatus, op.status == OperationStatus.SUCCEEDED ? op.amount : 0,
-                    refunded, null, views.run(l.run, l.player.record, caller.deviceId()), now);
+            Instant resolveBy = offer.resolveBy(ctx.config(l.run.configVersion).paymentResolutionMs());
+            return new OperationView(op.operationId, offer.offerId, status, !"pending".equals(status), chargeStatus, refundStatus,
+                    op.status == OperationStatus.SUCCEEDED ? op.amount : 0, refunded, null, op.createdAt, resolveBy,
+                    views.run(l.run, l.player.record, caller.deviceId()), now);
         });
     }
 

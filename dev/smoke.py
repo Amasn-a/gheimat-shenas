@@ -39,5 +39,5 @@ for i in range(40):
         break
 s, res = call("GET", f"/runs/{rid}/result"); print("result", s, json.dumps(res, ensure_ascii=False)[:600])
 time.sleep(1.5)
-s, res = call("GET", f"/runs/{rid}/result"); print("result again: cp reward", res.get("checkpoint_reward"), "streak", res.get("streak"), "balance", res.get("balance"))
+s, res = call("GET", f"/runs/{rid}/result"); print("result again: cp reward", res.get("checkpoint_reward"), "daily", call("GET", "/player/daily-reward")[1].get("state")), "balance", res.get("balance"))
 s, pr = call("GET", f"/runs/{rid}/products"); print("products", s, len(pr.get("items", [])), "loss", pr.get("loss_product_id"))

@@ -48,9 +48,9 @@ class HttpIT {
         });
         JdbcIdempotencyRepository idem = new JdbcIdempotencyRepository();
         http = new HttpServerAdapter(env.clock, "default-src 'self'");
-        http.add(new PlayerApi(env.m.runs, env.m.queries, env.m.auth, idem, env.m.ctx.tx(), env.clock, new RateLimiter(env.clock, false)).routes());
+        http.add(new PlayerApi(env.m.runs, env.m.queries, env.m.dailyRewards, env.m.auth, idem, env.m.ctx.tx(), env.clock, new RateLimiter(env.clock, false)).routes());
         http.add(new AdminApi(env.m.admin, adminRepo, idem, env.m.ctx.tx(), env.clock).routes());
-        http.add(new DevApi(env.m.fakeCoin, env.m.ctx.coin()).routes());
+        http.add(new DevApi(env.m.fakeCoin, env.m.ctx.coin(), env.m.ctx).routes());
         http.start("127.0.0.1", 0);
         base = "http://127.0.0.1:" + http.port();
         Logger.getLogger("").addHandler(capture);
@@ -194,8 +194,8 @@ class HttpIT {
         assertEquals(401, call("GET", P + "/bootstrap", null, "Authorization", "Bearer forged", "X-Device-Id", p.device()).status());
         assertEquals(422, call("GET", P + "/bootstrap", null, "Authorization", "Bearer " + p.token()).status());
         assertEquals(422, call("GET", P + "/bootstrap", null, "Authorization", "Bearer " + p.token(), "X-Device-Id", "laptop").status());
-        // the server's own receive time decides: a valid answer after the 11,000 ms cutoff is a timeout, whatever the client says
-        env.clock.advance(11_001);
+        // the server's own receive time decides: a valid answer arriving after t0 + 12,500 ms is refused, whatever the client says
+        env.clock.advance(12_501);
         Res late = p.post("/questions/" + q + "/answer", "{\"choice\":\"higher\"}");
         assertEquals(409, late.status(), late.raw());
         assertEquals("QUESTION_EXPIRED", late.code());
@@ -427,5 +427,58 @@ class HttpIT {
             assertTrue(resp.startsWith("HTTP/1.1 409"), resp);
             assertTrue(resp.contains("QUESTION_EXPIRED"), "a choice completed after the cutoff is late: " + resp);
         }
+    }
+
+    // ------------------------------------------------------------------------------------------------ brief 2026-10-20
+
+    @Test void oneKeyNamesOneOperation_reuseOnAnotherPathIsRefusedAndCreatesNothing() throws Exception {
+        Player p = player();
+        String key = UUID.randomUUID().toString();
+        Res start = p.post("/runs", "{}", key);
+        assertEquals(201, start.status(), start.raw());
+        String run = start.json().at("/run/run_id").asText();
+        Res reused = p.post("/runs/" + run + "/reveal", "{}", key);      // the start key reused for another operation
+        assertEquals(422, reused.status(), reused.raw());
+        assertEquals("IDEMPOTENCY_MISMATCH", reused.code());
+        assertEquals(0, env.count("SELECT count(*) FROM pe_question WHERE run_id = ?", run), "no question was opened");
+        assertEquals(422, p.post("/runs/" + run + "/reveal", "{\"score\":10}").status(), "reveal takes no client input (band, score, price)");
+    }
+
+    @Test void answerAdmittedBeforeTheDeadline_replayAndRetryAfterItReturnTheSameResult() throws Exception {
+        Player p = player();
+        String[] ids = openQuestion(p);
+        String run = ids[0], q = ids[1];
+        String right = env.rightChoice(run), key = UUID.randomUUID().toString();
+        env.clock.advance(12_000);                                                // arrives at t0 + 12,000: after the visible 10 s
+        Res first = p.post("/questions/" + q + "/answer", "{\"choice\":\"" + right + "\"}", key);
+        assertEquals(200, first.status(), first.raw());
+        assertEquals("correct", first.json().get("result").asText());
+        env.clock.advance(1_000);                                                 // t0 + 13,000: past the arrival deadline
+        Res replay = p.post("/questions/" + q + "/answer", "{\"choice\":\"" + right + "\"}", key);
+        assertEquals(200, replay.status());
+        assertEquals("true", replay.h().get("Idempotent-Replay"));
+        Res other = p.post("/questions/" + q + "/answer", "{\"choice\":\"" + TestEnv.flip(right) + "\"}");   // a new key, the other choice
+        assertEquals(200, other.status(), other.raw());
+        assertEquals("correct", other.json().get("result").asText(), "the admitted answer stands; no second answer");
+        assertEquals(1, p.get("/runs/" + run).json().get("score").asInt());
+    }
+
+    @Test void dailyRewardOverHttp_statusDoesNotClaim_claimsFromTwoDevicesCreditOnce() throws Exception {
+        Player p = player();
+        Res start = p.post("/runs", "{}");
+        p.post("/runs/" + start.json().at("/run/run_id").asText() + "/leave", "{}");
+        Res boot = p.get("/bootstrap");
+        assertEquals("claimable", boot.json().at("/daily_reward/state").asText(), boot.raw());
+        assertEquals(1, boot.json().at("/daily_reward/amount").asInt());
+        assertEquals(7, boot.json().at("/daily_reward/days").size());
+        assertEquals("claimable", p.get("/player/daily-reward").json().get("state").asText());
+        Res c1 = p.post("/player/daily-reward/claim", "{}");
+        Res c2 = p.onDevice(1).post("/player/daily-reward/claim", "{}");
+        assertEquals(200, c1.status(), c1.raw());
+        assertEquals(200, c2.status(), c2.raw());
+        env.drainLedger();
+        assertEquals("claimed", p.get("/player/daily-reward").json().get("state").asText());
+        assertEquals(1, env.count("SELECT coalesce(sum(amount), 0) FROM pe_fake_wallet_tx WHERE user_id = ? AND kind = 'CREDIT' AND applied", p.userId()));
+        assertEquals(422, p.post("/player/daily-reward/claim", "{\"amount\":5}").status(), "the client cannot name an amount");
     }
 }

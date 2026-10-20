@@ -38,7 +38,7 @@ async def main():
         t0 = time.time()
         mark = lambda k: marks.__setitem__(k, round(time.time() - t0, 3))
         await pg.goto(f"{BASE}/play/dev.html?user={user}&panel=0")
-        await wait_view(pg, ("G02.FIRST",)); await pg.click('[data-act="help-done"]')
+        await wait_view(pg, ("G02.ONBOARDING",)); await pg.evaluate("() => fetch('/dev/v1/price-expert/player/u_' + new URLSearchParams(location.search).get('user'), {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{\\"onboarded\\":true}'}).then(() => location.reload())")
         await wait_view(pg, ("G01.READY",)); await pg.wait_for_timeout(400)
         mark("start"); await pg.click('[data-act="start"]')
         await wait_view(pg, ("G03.READY",)); await pg.wait_for_timeout(1200)

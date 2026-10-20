@@ -178,19 +178,22 @@ class RunLifecycleIT {
         assertEquals(1, env.count("SELECT count(*) FROM pe_question WHERE run_id = ?", run));
     }
 
-    @Test void t07_deadlinesFollowR45() {
+    @Test void t07_deadlinesFollowTheTimingContract() {
+        // 2026-10-20: 10 s visible window, initial-request arrival deadline t0 + 12,500 ms; no extra 500 ms margin on top
         Caller c = env.caller(user());
         RunView q = reveal(c, env.m.runs.start(c).run().runId());
-        assertEquals(q.question().t0().plusMillis(10_500), q.question().inputDeadline());
-        assertEquals(q.question().t0().plusMillis(11_000), q.question().acceptDeadline());
-        assertEquals(10_500, q.runConfig().inputMs());
-        assertEquals(11_000, q.runConfig().acceptMs());
+        assertEquals(q.question().t0().plusMillis(10_000), q.question().inputDeadline());
+        assertEquals(q.question().t0().plusMillis(12_500), q.question().acceptDeadline());
+        assertEquals(10_000, q.runConfig().inputMs());
+        assertEquals(12_500, q.runConfig().acceptMs());
+        assertEquals(10_000, q.runConfig().offerMs());
+        assertEquals(15_000, q.runConfig().offerAcceptMs());
     }
 
     // ------------------------------------------------------------------------------------------------ T08, T09, T10, T11
 
-    @Test void t08_inclusiveServerCutoffAt11000ms() {
-        for (long at : new long[]{10_999, 11_000}) {
+    @Test void t08_inclusiveArrivalDeadlineAt12500ms() {
+        for (long at : new long[]{10_001, 12_499, 12_500}) {
             Caller c = env.caller(user());
             RunView q = reveal(c, env.m.runs.start(c).run().runId());
             AnswerView a = answer(c, q, true, at);
@@ -198,7 +201,7 @@ class RunLifecycleIT {
         }
         Caller c = env.caller(user());
         RunView q = reveal(c, env.m.runs.start(c).run().runId());
-        GameException e = expect("QUESTION_EXPIRED", () -> answer(c, q, true, 11_001));
+        GameException e = expect("QUESTION_EXPIRED", () -> answer(c, q, true, 12_501));
         // the timeout becomes final no earlier than acceptDeadline + grace and is stamped at acceptDeadline
         env.clock.set(q.question().acceptDeadline().plusMillis(999));
         env.m.deadlines.sweep(100);
@@ -349,7 +352,7 @@ class RunLifecycleIT {
         GameConfig base = LaunchConfig.value();
         var cps = new ArrayList<>(base.checkpoints());
         cps.set(0, new GameConfig.Checkpoint("cp_3", 3, "قیمت‌یاب تازه‌کار", "badge_3", 6, true));
-        GameConfig changed = new GameConfig(base.playsPerDay(), base.inputMs(), base.acceptMs(), base.offerMs(), base.inactivityMs(), base.offerActivationMs(),
+        GameConfig changed = new GameConfig(base.playsPerDay(), base.inputMs(), base.acceptMs(), base.offerMs(), base.offerAcceptMs(), base.paymentResolutionMs(), base.inactivityMs(), base.offerActivationMs(),
                 base.timeoutGraceMs(), base.checkpointAutoContinueMs(), cps, base.continueRule(), base.streakReward(), base.bands(), null, null, base.features());
         var draft = env.m.admin.saveDraft(admin, changed, null);
         assertTrue(draft.errors().isEmpty());

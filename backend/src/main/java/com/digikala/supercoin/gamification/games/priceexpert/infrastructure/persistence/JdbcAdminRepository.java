@@ -79,7 +79,7 @@ public final class JdbcAdminRepository implements AdminRepository {
             SELECT count(*) AS answers,
                    percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch FROM (q.received_at - q.released_at)) * 1000) AS median_ms_from_t0,
                    avg(CASE WHEN q.received_at - q.released_at < interval '600 milliseconds' THEN 1 ELSE 0 END) AS share_under_600ms,
-                   avg(CASE WHEN q.received_at - q.released_at >= interval '10500 milliseconds' THEN 1 ELSE 0 END) AS share_10_5_to_11s
+                   avg(CASE WHEN q.received_at - q.released_at > interval '10000 milliseconds' THEN 1 ELSE 0 END) AS share_after_visible_window
             FROM pe_question q JOIN pe_run r ON r.run_id = q.run_id
             WHERE r.user_id = ? AND q.received_at IS NOT NULL AND q.released_at > now() - interval '30 days'""", JdbcAdminRepository::row, userId).orElse(Map.of()));
         m.put("accuracy_by_band", query("""

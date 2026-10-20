@@ -7,26 +7,29 @@ import * as host from './host.js';
 import * as motion from './motion.js';
 import { DUR } from './durations.js';
 import * as V from './views.js';
-import { fa, money, untilInstant } from './fmt.js';
+import { DEMO_FIRST, DEMO_SECOND, DEMO_SECOND_PRICE } from './demo.js';
+import { fa, untilInstant } from './fmt.js';
 
 const $ = (s, r = document) => r.querySelector(s);
+const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 export const S = {
   view: 'G01.LOADING',
   boot: null, balance: null,
   run: null,          // last run view from the server
-  ref: null,          // reference card
-  q: null,            // open question { questionId, product, t0, inputDeadline, acceptDeadline, imgReady, imgSlow, pick, key }
+  ref: null,          // first product card
+  q: null,            // open question { questionId, product, t0, inputDeadline, acceptDeadline, imgReady, imgSlow, pick, key, locked }
   fb: null,           // feedback { kind, choice, direction, revealedPrice, product, equal }
   offer: null, op: null,
   result: null, products: null, ended: null, share: null,
-  ui: { toast: null, leave: false, cp: null, help: 'FIRST', offline: !navigator.onLine, resuming: false, queued: null, morph: null,
-        guardUntil: 0, lossGuided: false, shareBusy: false, codeState: null, afterContinue: false, noOffer: null },
+  ui: { toast: null, leave: false, cp: null, offline: !navigator.onLine, resuming: false, queued: null, morph: null,
+        guardUntil: 0, shareBusy: false, codeState: null, afterContinue: false, noOffer: null, cpShown: new Set(),
+        tour: null, daily: null, historyState: 'loading', histPositioned: null, histScroll: null, slowSettle: false, offerOver: false },
   keys: {},           // one Idempotency-Key per intent, reused for its retries
   gen: 0,
 };
 
-let root = null;
+let root = null, screenEl = null, cpEl = null;
 const now = () => performance.now();
 function later(ms, fn) { const g = S.gen; return setTimeout(() => { if (g === S.gen) fn(); }, ms); }
 /**
@@ -34,11 +37,11 @@ function later(ms, fn) { const g = S.gen; return setTimeout(() => { if (g === S.
  * flag outlives its run (a checkpoint due at a leave once blocked every reveal of the next run).
  */
 function resetRunUi() {
-  Object.assign(S.ui, { leave: false, cp: null, cpDue: null, cpAt: 0, cpAutoStarted: false, queued: null, resuming: false,
-    afterContinue: false, noOffer: null, guardUntil: 0, offerEnded: false, shareBusy: false });
-  cpToken++;                                                     // an open or pending checkpoint of the old run can no longer close or open
+  Object.assign(S.ui, { leave: false, cpDue: null, queued: null, resuming: false, afterContinue: false, noOffer: null, guardUntil: 0,
+    offerEnded: false, offerOver: false, shareBusy: false, slowSettle: false, cpShown: new Set() });
+  unmountCp();                                                    // an open or pending checkpoint of the old run can no longer close or open
 }
-const cfg = () => (S.run && S.run.runConfig) || (S.boot && S.boot.config) || { checkpoints: [], continueRule: { enabled: false, cost: 0, cap: 0 }, inputMs: 10500, acceptMs: 11000, offerMs: 10000, checkpointAutoContinueMs: 5000 };
+const cfg = () => (S.run && S.run.runConfig) || (S.boot && S.boot.config) || { checkpoints: [], continueRule: { enabled: false, cost: 0, cap: 0 }, inputMs: 10000, acceptMs: 12500, offerMs: 10000, offerAcceptMs: 15000, checkpointAutoContinueMs: 5000 };
 const inRun = v => /^G03\.|^G04\.|^G05\.|^G06\./.test(v);
 /** A01 switch of the run's (or, before a run, the active) configuration; on when an older server sends none. */
 const feat = k => { const f = cfg().features; return !f || f[k] !== false; };
@@ -48,46 +51,48 @@ const haptic = kind => { if (feat('haptics')) host.haptic(kind); };
 function model() {
   const r = S.run, c = cfg();
   return {
-    boot: S.boot, toast: S.ui.toast, config: c, playsPerDay: S.boot ? S.boot.quota.playsPerDay : 3, helpFirst: S.ui.help === 'FIRST',
+    boot: S.boot, toast: S.ui.toast, config: c,
     untilReset: S.boot ? clock.ms(S.boot.quota.resetsAt) - clock.serverNow() : 0,
     result: S.result ? { ...S.result, codeState: S.ui.codeState } : null,   // carries the copy state the view renders
-    products: S.products, lossGuided: S.ui.lossGuided, shareBusy: S.ui.shareBusy, ended: S.ended,
+    products: S.products, historyState: S.ui.historyState, shareBusy: S.ui.shareBusy, ended: S.ended,
     lastScore: S.ended ? S.ended.score : 0, playerMessage: S.boot && S.boot.access ? S.boot.access.message : null,
     shareSheet: '', score: r ? r.score : 0, checkpoint: r ? r.highestCheckpoint : null, leave: S.ui.leave,
     questionOpen: ['G03.QUESTION_ACTIVE', 'G03.ANSWER_PENDING'].includes(S.view),
+    modal: S.ui.daily && S.boot && S.boot.dailyReward ? V.dailyModal(S.boot.dailyReward, S.ui.daily) : '',
   };
 }
 
 function hud(plus) {
-  const r = S.run;
-  return V.top({ score: r.score, record: r.record, balance: S.balance, plus,
+  return V.top({ score: S.run.score, plus,
     backLocked: !!S.op || S.view === 'G03.ANSWER_PENDING' || S.view === 'G06.PENDING' || S.view === 'G06.UNKNOWN' });
 }
-const trk = earned => V.track(S.run.score, cfg().checkpoints, S.run.record, earned);
+const trk = earned => V.track(S.run.score, cfg().checkpoints, earned);
 
+/** Visible countdown of the open question: 10 → 1 over the 10,000 ms window; white, easing to orange, red in the last 3 s. */
+const WHITE = [255, 255, 255], ORANGE = [255, 154, 60];
 function timerNow() {
-  const c = cfg(), q = S.q;
-  const rem = Math.max(0, Math.min(c.inputMs, clock.ms(q.inputDeadline) - clock.serverNow()));
-  // the label belongs to t0: 10 × remaining / 10,500, rounded up, so it never shows 0 while input is open (R-45)
-  return { rem, t: fa(Math.ceil(10 * rem / c.inputMs)), p: (rem / c.inputMs).toFixed(3), mode: rem <= c.inputMs * 0.3 ? 'low' : '' };   // last 3 shown seconds
+  const total = cfg().inputMs, q = S.q;
+  const rem = Math.max(0, Math.min(total, clock.ms(q.inputDeadline) - clock.serverNow()));
+  const low = rem <= 3000, k = Math.min(1, Math.max(0, (total - rem) / Math.max(1, total - 3000)));
+  const tc = low ? '#FF5468' : `rgb(${WHITE.map((w, i) => Math.round(w + (ORANGE[i] - w) * k)).join(',')})`;
+  return { rem, t: fa(Math.ceil(rem / 1000)), p: (rem / total).toFixed(3), tc, low, mode: low ? 'low' : '' };   // never 0 while input is open
 }
 
 function screen() {
   const v = S.view, m = model();
   if (v.startsWith('G01.')) return V.vStart(v, m);
-  if (v.startsWith('G02.')) return V.vHelp(m);
+  if (v === 'G02.TOUR') return tourScene();
   if (v === 'G03.LOADING') return loadingRun();
   if (['G03.READY', 'G03.PREPARING', 'G03.PREPARE_FAILED', 'G06.SUCCESS'].includes(v)) return ready(m);
   if (v === 'G03.QUESTION_ACTIVE' || v === 'G03.ANSWER_PENDING') return question(m);
   if (inRun(v)) return feedback(m);
   if (v.startsWith('G07.')) { m.shareSheet = S.share ? shareSheet() : ''; return V.vResult(m); }
-  if (v.startsWith('G08.')) return V.vProducts(v, m);
   return V.vSystem(v, m);
 }
 
 function loadingRun() {
-  return V.play(V.top({ score: 0, record: 0, balance: S.balance }), V.track(0, cfg().checkpoints, 0), '<div class="v3-hero v3-hero--ref" aria-busy="true" aria-label="کالای مرجع در راهه"><div class="v3-img v3-skel v3-skel--card"></div><div class="v3-hero__b"><span class="v3-skel v3-skel--card" style="flex:1 1 60%;height:20px"></span><span class="v3-skel v3-skel--card" style="width:40%;height:30px"></span></div></div>' +
-    V.revealRow('کالای مرجع در راهه…', '', '<span class="v3-spin" aria-hidden="true"></span>نمایش بده', ' disabled aria-disabled="true" aria-busy="true"'), V.keys('off', null, true), '', S.ui.toast);
+  return V.play(V.top({ score: 0 }), V.track(0, cfg().checkpoints), '<div class="v3-hero v3-hero--ref" aria-busy="true" aria-label="کالای اول در راهه"><div class="v3-img v3-skel v3-skel--card"></div><div class="v3-hero__b"><span class="v3-skel v3-skel--card" style="flex:1 1 60%;height:20px"></span><span class="v3-skel v3-skel--card" style="width:40%;height:30px"></span></div></div>' +
+    V.revealRow('کالا در راهه…', '', '<span class="v3-spin" aria-hidden="true"></span>نمایش بده', ' disabled aria-disabled="true" aria-busy="true"'), V.keys('off', null, true), '', S.ui.toast);
 }
 
 function ready(m) {
@@ -101,18 +106,19 @@ function ready(m) {
   const row = off ? V.revealRow('کالای بعدی آماده‌ست', '', 'در انتظار اتصال…', V.L)
     : S.ui.afterContinue ? V.revealRow('ادامه می‌دیم!', 'فرصت ادامه این دست استفاده شد.', 'نمایش بده', ' data-act="reveal"')
     : V.revealRow('کالای بعدی آماده‌ست', 'هر وقت آماده بودی ببینش؛ بعدش ۱۰ ثانیه وقت داری.', 'نمایش بده', ' data-act="reveal"');
-  const cp = S.ui.cp;
-  const cpHTML = cp ? V.cpOverlay(cp, cfg().checkpoints.find(x => x.requiredCorrect > cp.requiredCorrect), now() >= S.ui.cpAt + DUR.cpGuardMs, DUR.cpGuardMs, cfg().checkpointAutoContinueMs) : '';
-  return V.play(hud(), trk(), pill + V.refBig(S.ref) + row, V.keys('off', null, true), cpHTML + V.leaveSheet(m), S.ui.toast);
+  return V.play(hud(), trk(), pill + V.refBig(S.ref) + row, V.keys('off', null, true), V.leaveSheet(m), S.ui.toast);
 }
 
 function question(m) {
-  const q = S.q, pend = !!q.pick, off = S.ui.offline, tn = timerNow();
-  const pill = off ? V.stagepill('اتصال قطع شد؛ تا برگرده نمی‌شه جواب داد و زمان ادامه داره.', 'wifi', true) : '';
-  const a = pend ? V.ask('در حال بررسی پاسخ…', { ...tn, muted: true, spin: true }) : V.ask(V.Q_TEXT, { ...tn, muted: off });
-  const rs = S.ui.resuming ? V.stagepill('در حال اتصال دوباره… زمان ادامه داره.', 'refresh') : '';   // CP-26
-  const locked = off || tn.rem <= 0;
-  return V.play(hud(), trk(), (rs || pill) + V.refTicket(S.ref) + a + V.hero(q.product, 'hidden', q.imgSlow && !q.imgReady), V.keys(pend ? 'pending' : locked ? 'off' : 'on', q.pick, false, S.ref.price), V.leaveSheet(m), S.ui.toast);
+  const q = S.q, pend = !!q.pick, off = S.ui.offline, tn = timerNow(), over = !pend && (q.locked || tn.rem <= 0);
+  let pill = off ? V.stagepill('اتصال قطع شد؛ تا برگرده نمی‌شه جواب داد و زمان ادامه داره.', 'wifi', true) : '';
+  if (S.ui.resuming) pill = V.stagepill('در حال اتصال دوباره… زمان ادامه داره.', 'refresh');   // CP-26
+  if (S.ui.slowSettle) pill = V.stagepill(pend ? 'پاسخت ثبت شده؛ نتیجه‌اش هنوز نرسیده.' : 'نتیجه هنوز نرسیده.', 'refresh', false,
+    '<button class="v3-stagepill__btn" data-act="recheck-answer">بررسی دوباره</button>');
+  // after a pick the countdown gives way to a processing state; at the visible zero without a pick, input locks and the server records the timeout
+  const a = pend ? V.ask('در حال بررسی پاسخ…', { mode: 'pending', muted: true })
+    : over ? V.ask('وقت تموم شد؛ در حال ثبت…', { mode: 'wait', muted: true, spin: true }) : V.ask(V.Q_TEXT, { ...tn, muted: off });
+  return V.play(hud(), trk(), pill + V.refTicket(S.ref) + a + V.hero(q.product, 'hidden', q.imgSlow && !q.imgReady), V.keys(pend ? 'pending' : off || over ? 'off' : 'on', q.pick, false, S.ref.price), V.leaveSheet(m), S.ui.toast);
 }
 
 function fbParts() {
@@ -122,10 +128,11 @@ function fbParts() {
       V.hero(fb.product, 'correct', false, dir, fb.revealedPrice), V.keys('ok', fb.choice), false];
   }
   if (fb.kind === 'wrong') return [hud(), trk(), V.refTicket(S.ref) + V.verdict('no', 'اشتباه بود', `${truthW} بود`) + V.hero(fb.product, 'wrong', false, dir, fb.revealedPrice), V.keys('no', fb.choice), true];
-  const truthSide = fb.direction === 'higher' ? 'higher' : 'lower';
+  const truthSide = fb.direction === 'higher' ? 'higher' : 'lower';   // timeout: no answer is shown as the player's
   return [hud(), trk(), V.refTicket(S.ref) + V.verdict('time', 'وقت تموم شد', `${truthW} بود`) + V.hero(fb.product, 'timeout', false, dir, fb.revealedPrice), V.keys('truth', truthSide), true];
 }
 
+const SPIN_ICON = '<span class="v3-sheet__icon v3-sheet__icon--busy" aria-hidden="true"><span class="v3-spin"></span></span>';
 function feedback(m) {
   const v = S.view, c = cfg();
   if (v === 'G03.NO_PRODUCTS_LEFT') return V.play(hud(), trk(), V.refTicket(S.ref) + V.ask('دست کامل شد', { mode: 'off', muted: true }) + '<div class="v3-hero is-empty"></div>', V.keys('off'),
@@ -138,22 +145,25 @@ function feedback(m) {
   const ringHTML = () => S.offer ? V.ring(Math.max(0, clock.ms(S.offer.deadline) - clock.serverNow()), c.offerMs) : '';
   const txt = () => V.offerText(S.fb.revealedPrice, S.run.score, S.run.highestCheckpoint);
   let sh = '';
-  if (v === 'G05.OFFER') sh = V.sheet('یه فرصت دیگه؟', txt(), V.cost(bal, S.offer.cost) + ONCE, V.BTNS(V.GOLD(V.COIN + `ادامه با ${C} دیجی‌کوین`, ' data-act="continue"', false), V.SKIP()), '', null, ringHTML());
+  if (v === 'G05.OFFER' && S.ui.offerOver)                                   // visible window over, no purchase sent
+    sh = V.sheet('زمان پیشنهاد تموم شد', txt(), V.cost(bal, S.offer.cost), V.BTNS(V.BTN('v3-btn--block v3-btn--xl', V.COIN + `ادامه با ${C} دیجی‌کوین`, V.L), V.SKIP(' data-act="skip"', 'دیدن نتیجه')),
+      V.status('', 'در حال ثبت پایان دست…', null, true), null, ringHTML());
+  else if (v === 'G05.OFFER') sh = V.sheet('یه فرصت دیگه؟', txt(), V.cost(bal, S.offer.cost) + ONCE, V.BTNS(V.GOLD(V.COIN + `ادامه با ${C} دیجی‌کوین`, ' data-act="continue"', false), V.SKIP()), '', null, ringHTML());
   else if (v === 'G06.PENDING') sh = V.sheet('یه فرصت دیگه؟', txt(), V.cost(bal, S.offer.cost), V.BTNS(V.BUSY(`ادامه با ${C} دیجی‌کوین`, false), V.SKIP(V.L)),
-    V.status('', 'در حال بررسی پرداخت… تا مشخص شدن نتیجه، خروج غیرفعاله.', null, true), null, ringHTML());
+    V.status('', 'در حال بررسی پرداخت… تا مشخص شدن نتیجه، خروج غیرفعاله.', null, true), null, SPIN_ICON);
   else if (v === 'G06.FAILED_RETRY') sh = V.sheet('یه فرصت دیگه؟', txt(), V.cost(bal, S.offer.cost) + ONCE, V.BTNS(V.GOLD(V.COIN + `دوباره: ادامه با ${C} دیجی‌کوین`, ' data-act="continue"', false), V.SKIP()),
     V.status('no', 'پرداخت انجام نشد و کوینی کسر نشد. هنوز فرصت داری دوباره امتحان کنی.', 'alert', false, true), null, ringHTML());
-  else if (v === 'G06.FAILED_END') sh = V.sheet('ادامه ممکن نشد', `پرداخت انجام نشد و کوینی کسر نشد. زمان پیشنهاد تموم شد و این دست با ${fa(S.run.score)} پاسخ درست ثبت شد.`, '',
-    V.GOLD('دیدن نتیجه', ' data-act="see-result"', false), V.status('', `موجودی شما: ${bal} دیجی‌کوین`, 'info'), ['no', 'alert']);
+  else if (v === 'G06.FAILED_END') sh = V.sheet('ادامه ممکن نشد', `پرداخت انجام نشد و کوینی کسر نشد. این دست با ${fa(S.run.score)} پاسخ درست ثبت شد.`, '',
+    V.GOLD('دیدن نتیجه', ' data-act="see-result"', false), '', ['no', 'alert']);
   else if (v === 'G06.REFUNDED') sh = V.sheet('ادامه ممکن نشد', `این دست با ${fa(S.run.score)} پاسخ درست تموم شد${S.run.highestCheckpoint ? ` و پاداش چک‌پوینت ${fa(S.run.highestCheckpoint.requiredCorrect)} برات ثبت می‌شه` : ''}.`, '',
-    V.GOLD('دیدن نتیجه', ' data-act="see-result"', false), V.status('ok', `${C} دیجی‌کوین به حسابت برگشت. موجودی: ${bal}`, 'check'), ['ok', 'refresh']);
-  else if (v === 'G06.UNKNOWN') sh = V.sheet('نتیجه پرداخت هنوز مشخص نیست', 'داریم نتیجه رو از سرور می‌گیریم. هیچ مبلغی دوباره کسر نمی‌شه؛ اگه ادامه ممکن نشه، هزینه برمی‌گرده.', '',
-    V.BTN('v3-btn--outline v3-btn--block', 'بررسی دوباره', ' data-act="recheck"'), V.status('warn', 'تا مشخص شدن نتیجه، خروج از دست غیرفعاله.', null, true), null, ringHTML());
+    V.GOLD('دیدن نتیجه', ' data-act="see-result"', false), V.status('ok', `${C} دیجی‌کوین به حسابت برگشت.`, 'check'), ['ok', 'refresh']);
+  else if (v === 'G06.UNKNOWN') sh = V.sheet('نتیجه پرداخت هنوز مشخص نیست', 'درخواستت به‌موقع رسیده و داریم نتیجه‌اش رو می‌گیریم. هیچ مبلغی دوباره کسر نمی‌شه؛ اگه ادامه ممکن نشه، هزینه برمی‌گرده.', '',
+    V.BTN('v3-btn--outline v3-btn--block', 'بررسی دوباره', ' data-act="recheck"'), V.status('warn', 'تا مشخص شدن نتیجه، خروج از دست غیرفعاله.', null, true), null, SPIN_ICON);
   else if (v === 'G06.FAILED_END.UNCONFIRMED') {
     // CP-20 is NOT approved: draft wording that does not claim the debit never happened (contract §6, §19).
     const refund = S.op && S.op.refundStatus === 'succeeded' ? V.status('ok', 'هزینه داره به حسابت برمی‌گرده.', 'check') : '';
     sh = V.sheet('ادامه ممکن نشد', `پرداخت به‌موقع تأیید نشد و ادامه انجام نشد؛ اگه مبلغی کسر شده باشه، خودکار برمی‌گرده. این دست با ${fa(S.run.score)} پاسخ درست ثبت شد.`, refund,
-      V.GOLD('دیدن نتیجه', ' data-act="see-result"', false), V.status('', `موجودی شما: ${bal} دیجی‌کوین`, 'info'), ['no', 'alert']);
+      V.GOLD('دیدن نتیجه', ' data-act="see-result"', false), '', ['no', 'alert']);
   }
   const miss = ['G03.WRONG_FEEDBACK', 'G03.TIMEOUT', 'G05.NO_FUNDS'].includes(v);
   const why = miss && S.ui.noOffer === 'limit_used' ? V.stagepill('فرصت ادامه این دست رو قبلاً استفاده کردی.', 'info')   // CP-24
@@ -172,42 +182,44 @@ export function render() {
   const ms = S.view.startsWith('G11.') ? 0 : S.ui.morph != null ? S.ui.morph : motion.running() ? Math.max(160, motion.remaining()) : 0;
   S.ui.morph = null;
   const before = ms && !motion.reducedMotion() ? motion.snapshot(root) : null;
-  const sc = root.querySelector('[data-scroll]'), keep = sc && [sc.dataset.scroll, sc.scrollTop];
+  const hs = root.querySelector('[data-hscroll]');
+  if (hs && S.ui.histPositioned) S.ui.histScroll = hs.scrollLeft;   // a re-render never resets the player's own scrolling
   motion.end();
-  root.innerHTML = screen();
+  screenEl.innerHTML = screen();
   root.dataset.view = stateId();
-  if (keep) { const n = root.querySelector(`[data-scroll="${keep[0]}"]`); if (n) n.scrollTop = keep[1]; }
   wireImages();
-  if (S.view === 'G08.LIST' && S.products && S.products.lossProductId && !S.ui.lossGuided) { S.ui.lossGuided = true; requestAnimationFrame(guideToLoss); }
   if (before) motion.morph(root, before, ms, () => { const q = S.ui.queued; S.ui.queued = null; if (q === 'reveal') setTimeout(reveal, 0); });
   if (root.querySelector('[data-countdown]')) tickLoop();       // any screen with a quota countdown keeps it ticking
-  if (S.ui.cp && S.ui.cpAutoStarted) { const bar = root.querySelector('[data-cpauto]'); if (bar) { bar.style.transition = 'none'; bar.style.transform = `scaleX(${Math.min(1, (now() - S.ui.cpAutoStartedAt) / cfg().checkpointAutoContinueMs)})`; requestAnimationFrame(() => { bar.style.transition = `transform ${Math.max(0, cfg().checkpointAutoContinueMs - (now() - S.ui.cpAutoStartedAt))}ms linear`; bar.style.transform = 'scaleX(1)'; }); } }
+  if (S.view === 'G02.TOUR') afterTourRender();
+  if (S.view.startsWith('G07.')) afterResultRender();
 }
 
 /** Fine-grained state id (as in the handoff state index) for analytics, tests and reviewers. */
 export function stateId() {
   const v = S.view;
+  if (S.ui.cp && (v === 'G03.READY' || v === 'G06.SUCCESS')) return 'G04.REACHED';
   if (S.ui.resuming && inRun(v)) return 'G10.RESUMING';
+  if (v === 'G02.TOUR' && S.ui.tour) return `G02.${S.ui.tour.mode === 'first' ? 'ONBOARDING' : 'GUIDE'}.${TOUR[S.ui.tour.i].id.toUpperCase()}`;
+  if (v.startsWith('G01.') && S.ui.daily) return 'G01.DAILY_REWARD.' + S.ui.daily.phase.toUpperCase();
   if (v === 'G03.QUESTION_ACTIVE' && S.q) {
     if (S.ui.offline) return 'G10.OFFLINE_AFTER_RELEASE';
+    if (S.q.locked || timerNow().rem <= 0) return 'G03.TIME_UP_PENDING';
     if (S.q.imgSlow && !S.q.imgReady) return 'G03.QUESTION_ACTIVE.IMAGE_SLOW';
-    if (timerNow().mode === 'low') return 'G03.QUESTION_ACTIVE.LOW_TIME';
+    if (timerNow().low) return 'G03.QUESTION_ACTIVE.LOW_TIME';
   }
   if (v === 'G03.ANSWER_PENDING' && S.ui.offline) return 'G10.OFFLINE_AFTER_RELEASE';
+  if (v === 'G03.ANSWER_PENDING' && S.ui.slowSettle) return 'G03.ANSWER_PENDING.RECOVERY';
   if (v === 'G03.READY' && S.ui.offline) return 'G10.OFFLINE_BEFORE_RELEASE';
-  if ((v === 'G03.READY' || v === 'G06.SUCCESS') && S.ui.cp) return 'G04.REACHED';
   if (v === 'G03.CORRECT_FEEDBACK' && S.fb && S.fb.equal) return 'G03.CORRECT_FEEDBACK.EQUAL';
+  if (v === 'G05.OFFER' && S.ui.offerOver) return 'G05.OFFER.TIME_UP';
   if (v === 'G01.READY' && S.boot) {
     const b = S.boot;
     if (b.activeRun && !b.activeRun.onThisDevice) return 'G01.READY.OTHER_DEVICE_RUN';
     if (b.campaign) return 'G01.READY.CAMPAIGN';
-    if (b.streak.lostNotice) return 'G01.READY.STREAK_LOST';
-    if (!b.record && !b.streak.days) return 'G01.READY.NEW_PLAYER';
+    if (!b.record) return 'G01.READY.NEW_PLAYER';
   }
-  if (v.startsWith('G07.')) return S.share ? 'G09.ASSET' : S.ui.shareBusy ? 'G09.GENERATING' : S.ui.toast && S.ui.toast.id ? S.ui.toast.id : V.resultId(S.result ? { ...S.result, codeState: S.ui.codeState } : null, S.result ? S.result.quota.playsLeft : null);
-  if (v.startsWith('G08.') && S.ui.toast && S.ui.toast.id) return S.ui.toast.id;
+  if (v.startsWith('G07.')) return S.share ? 'G09.ASSET' : S.ui.shareBusy ? 'G09.GENERATING' : S.ui.toast && S.ui.toast.id ? S.ui.toast.id : V.resultId(S.result ? { ...S.result, codeState: S.ui.codeState } : null);
   if (S.ui.leave && inRun(v)) return 'G03.LEAVE_CONFIRM';
-  if (v.startsWith('G02.')) return 'G02.' + S.ui.help;
   return v;
 }
 
@@ -217,13 +229,6 @@ function wireImages() {
   const qid = S.q.questionId;
   const done = () => { if (S.q && S.q.questionId === qid && !S.q.imgReady) { S.q.imgReady = true; if (S.q.imgSlow) render(); } };
   if (im.complete && im.naturalWidth) done(); else { im.addEventListener('load', done, { once: true }); im.addEventListener('error', () => {}, { once: true }); }
-}
-
-function guideToLoss() {   // once per result: bring the losing product into view with a little context above it (UX-5)
-  const list = root.querySelector('[data-scroll="products"]'), card = list && list.querySelector('[data-loss]'); if (!card) return;
-  const top = card.offsetTop, bottom = top + card.offsetHeight, view = list.scrollTop + list.clientHeight;
-  if (top >= list.scrollTop && bottom <= view - 8) return;
-  list.scrollTo({ top: Math.max(0, top - 56), behavior: motion.reducedMotion() ? 'auto' : 'smooth' });
 }
 
 function go(view) { S.view = view; render(); }
@@ -246,12 +251,17 @@ function handleError(e, context) {
 }
 const endedFrom = st => st ? { score: st.score, checkpoint: st.highestCheckpoint, runId: st.runId } : (S.run ? { score: S.run.score, checkpoint: S.run.highestCheckpoint, runId: S.run.runId } : null);
 
-// ------------------------------------------------------------------------------------------------ boot / start / resume
+// ------------------------------------------------------------------------------------------------ boot / entry order
+/**
+ * Entry order (brief 2026-10-20), never stacked: 1) the mandatory onboarding while the account has not completed it,
+ * 2) the daily reward modal when an earned reward waits for its claim, 3) the start screen. A run in progress on this
+ * device comes before all of them (its deadlines keep running).
+ */
 export async function boot() {
   S.gen++; motion.end();
   Object.assign(S, { run: null, ref: null, q: null, fb: null, offer: null, op: null, result: null, products: null, share: null, keys: {} });
   resetRunUi();
-  Object.assign(S.ui, { toast: null, lossGuided: false, shareBusy: false, codeState: null });
+  Object.assign(S.ui, { toast: null, shareBusy: false, codeState: null, tour: null, daily: null, histPositioned: null, histScroll: null });
   host.setBackHandler(null);
   go('G01.LOADING');
   try {
@@ -264,15 +274,26 @@ export async function boot() {
     if (b.activeRun.state === 'PAYMENT_PENDING') { go('G01.OPERATION_PENDING'); return pollPendingAtStart(b.activeRun); }
     return go('G01.ACTIVE_RUN');
   }
-  if (b.firstVisit) { S.ui.help = 'FIRST'; return go('G02.FIRST'); }
-  if (b.quota.playsLeft <= 0) return go('G01.QUOTA_EXHAUSTED');
-  go('G01.READY');
+  if (b.firstVisit) return startTour('first');
+  toStart();
 }
 
-async function pollPendingAtStart(active) {   // 1 s backing off to 2 s, only until the offer deadline (handoff)
+/** Start screen, with the daily reward modal on top when a reward is claimable (or a claim is still being confirmed). */
+function toStart() {
+  const d = S.boot.dailyReward;
+  if (d && (d.state === 'claimable' || d.state === 'processing') && !(S.boot.activeRun && S.boot.activeRun.onThisDevice)) {
+    S.ui.daily = { phase: d.state === 'processing' ? 'processing' : 'claimable' };
+    if (d.state === 'processing') pollDaily();
+  }
+  go(S.boot.quota.playsLeft > 0 ? 'G01.READY' : 'G01.QUOTA_EXHAUSTED');
+  if (S.ui.daily) focusModal();
+}
+function focusModal() { requestAnimationFrame(() => { const b = root.querySelector('.pe-daily .v3-btn:not([disabled])'); if (b) b.focus({ preventScroll: true }); }); }
+
+async function pollPendingAtStart(active) {   // 1 s backing off to 2 s while the server still waits for the payment
   const g = S.gen; let delay = 1000;
   while (g === S.gen) {
-    await new Promise(r => setTimeout(r, delay)); delay = Math.min(2000, delay + 500);
+    await sleep(delay); delay = Math.min(2000, delay + 500);
     if (g !== S.gen) return;
     try {
       const run = await api.run(active.runId);
@@ -281,6 +302,186 @@ async function pollPendingAtStart(active) {   // 1 s backing off to 2 s, only un
   }
 }
 
+// ------------------------------------------------------------------------------------------------ daily reward (G01.DAILY_REWARD)
+async function claimDaily() {
+  const d = S.ui.daily; if (!d || ['claiming', 'processing', 'claimed'].includes(d.phase)) return;
+  d.phase = 'claiming'; render();                                   // locked at once: one claim per tap, however fast
+  const key = S.keys.daily ||= newKey(), g = S.gen;
+  try {
+    const v = await api.claimDaily(key);
+    if (g !== S.gen) return;
+    S.keys.daily = null;
+    applyDaily(v);
+  } catch (e) {
+    if (g !== S.gen) return;
+    if (e instanceof ApiError && e.network) { Object.assign(S.ui.daily, { phase: 'error', message: null }); return render(); }   // same key on retry
+    S.keys.daily = null;
+    if (e instanceof ApiError && (e.code === 'PLAYER_BLOCKED' || e.status === 401)) { S.ui.daily = null; return handleError(e); }
+    Object.assign(S.ui.daily, { phase: 'error', message: 'جایزه الان ثبت نشد؛ جایزه‌ات محفوظه. دوباره امتحان کن.' }); render();
+  }
+}
+function applyDaily(v) {
+  if (!S.ui.daily || !S.boot) return;
+  S.boot.dailyReward = v;
+  const phase = { claimed: 'claimed', processing: 'processing', delayed: 'delayed', claimable: 'claimable' }[v.state];
+  if (!phase) { S.ui.daily = null; return render(); }               // nothing to claim any more (claimed elsewhere long ago)
+  S.ui.daily.phase = phase; render(); focusModal();
+  if (phase === 'processing') pollDaily();
+}
+async function pollDaily() {   // every 1 s for 8 s, then the recovery state with «بررسی دوباره»
+  if (S.ui.dailyPolling) return;
+  S.ui.dailyPolling = true;
+  const g = S.gen;
+  try {
+    for (let i = 0; i < 8; i++) {
+      await sleep(1000);
+      if (g !== S.gen || !S.ui.daily || S.ui.daily.phase !== 'processing') return;
+      try { const v = await api.dailyReward(); if (g !== S.gen || !S.ui.daily) return; if (v.state !== 'processing') return applyDaily(v); }
+      catch (e) { /* stays processing; the recovery state follows */ }
+    }
+    if (g === S.gen && S.ui.daily && S.ui.daily.phase === 'processing') { S.ui.daily.phase = 'slow'; render(); }
+  } finally { S.ui.dailyPolling = false; }
+}
+async function checkDaily() {
+  const g = S.gen;
+  if (!S.ui.daily) return;
+  S.ui.daily.phase = 'processing'; render();
+  try { const v = await api.dailyReward(); if (g === S.gen) { if (v.state === 'processing') { S.ui.daily.phase = 'slow'; render(); } else applyDaily(v); } }
+  catch (e) { if (g === S.gen && S.ui.daily) { S.ui.daily.phase = 'slow'; render(); } }
+}
+
+// ------------------------------------------------------------------------------------------------ G02 onboarding and guide
+/**
+ * One spotlight lesson on a demo scene built from the real gameplay components, used twice: as the mandatory
+ * onboarding (cannot be skipped in one action; completion is stored on the account only after the last step) and as the
+ * guide reopened from the start screen (closable). Nothing in it calls a game endpoint, spends a play or a coin, or
+ * starts a real deadline: its buttons carry tour-* actions only.
+ */
+const TOUR = [
+  { id: 'first', phase: 'ready', target: 'first', title: 'کالای اول', text: 'بازی با یه کالا و قیمتش شروع می‌شه.' },
+  { id: 'reveal', phase: 'ready', target: 'reveal', title: '«نمایش بده»', text: 'هر وقت آماده بودی، بزنش تا کالای دوم بیاد.', interact: true, hint: 'دکمه‌ی «نمایش بده» رو بزن.' },
+  { id: 'second', phase: 'question', target: 'second', title: 'کالای دوم', text: 'قیمت این یکی مخفیه؛ باید حدسش بزنی.' },
+  { id: 'timer', phase: 'question', target: 'timer', title: '۱۰ ثانیه وقت', text: 'از لحظه‌ای که کالای دوم میاد، ۱۰ ثانیه وقت داری.' },
+  { id: 'answer', phase: 'question', target: 'answers', title: 'گرون‌تر یا ارزون‌تر؟', text: 'کالای دوم از اولی گرون‌تره یا ارزون‌تر؟', interact: true, hint: 'یکی از دو دکمه رو بزن.' },
+  { id: 'progress', phase: 'answered', target: 'hud,progress', title: 'شمارنده و پرچم‌ها', text: 'هر جواب درست یکی به شمارنده اضافه می‌کنه. به هر پرچم برسی، پاداش اون چک‌پوینت مال توئه.' },
+  { id: 'done', phase: 'answered', target: null, title: 'آماده‌ای؟', text: '' },
+];
+
+function startTour(mode) {
+  S.ui.daily = null;
+  S.ui.tour = { mode, i: 0, pick: null, busy: false, error: null };
+  host.setBackHandler(() => {                                     // device back: one step back; never skips the onboarding
+    const t = S.ui.tour; if (!t) return false;
+    if (t.mode === 'guide') { closeTour(); return true; }
+    if (t.i > 0) tourStep(t.i - 1);
+    return true;
+  });
+  go('G02.TOUR');
+}
+function tourStep(i) {
+  const t = S.ui.tour; if (!t) return;
+  const from = TOUR[t.i].phase, to = TOUR[i].phase;
+  if (to !== 'answered') t.pick = null;
+  t.i = i; t.error = null;
+  S.ui.morph = from === 'ready' && to === 'question' ? DUR.shrinkMs : from !== to ? DUR.verdictMs : 0;
+  go('G02.TOUR');
+}
+function closeTour() { S.ui.tour = null; host.setBackHandler(null); toStart(); }
+async function finishTour() {
+  const t = S.ui.tour; if (!t || t.busy) return;
+  if (t.mode === 'guide') return closeTour();
+  t.busy = true; t.error = null; render();
+  const key = S.keys.onboarding ||= newKey(), g = S.gen;
+  for (let i = 0; i < 2; i++) {
+    try {
+      await api.onboarding(key);
+      if (g !== S.gen) return;
+      S.keys.onboarding = null; S.boot.firstVisit = false;
+      return closeTour();                                         // stored on the account: next: daily reward if earned, then start
+    } catch (e) {
+      if (g !== S.gen) return;
+      if (!(e instanceof ApiError) || !e.network || i === 1) break;
+      await sleep(800);
+    }
+  }
+  Object.assign(t, { busy: false, error: 'ذخیره نشد؛ اتصال رو بررسی کن و دوباره بزن.' }); render();
+}
+function tourAnswer(choice) { const t = S.ui.tour; if (!t || TOUR[t.i].id !== 'answer') return; t.pick = choice; tourStep(t.i + 1); }
+
+function tourScene() {
+  const t = S.ui.tour, st = TOUR[t.i], ph = st.phase, c = cfg(), ok = t.pick === 'higher';
+  const score = ph === 'answered' && ok ? 1 : 0;
+  const top = V.top({ score, plus: ph === 'answered' && ok, backLocked: true });
+  let main, dock;
+  if (ph === 'ready') {
+    main = V.refBig(DEMO_FIRST) + V.revealRow('کالای بعدی آماده‌ست', 'هر وقت آماده بودی ببینش؛ بعدش ۱۰ ثانیه وقت داری.', 'نمایش بده', st.id === 'reveal' ? ' data-act="tour-reveal"' : V.L);
+    dock = V.keys('off', null, true);
+  } else if (ph === 'question') {
+    main = V.refTicket(DEMO_FIRST) + V.ask(V.Q_TEXT, { t: fa(10), p: '1.000', tc: '#FFFFFF' }) + V.hero(DEMO_SECOND, 'hidden');
+    dock = V.keys(st.id === 'answer' ? 'on' : 'off', null, false, DEMO_FIRST.price).replace(/data-act="ans-/g, 'data-act="tour-ans-');
+  } else {
+    main = V.refTicket(DEMO_FIRST) + V.verdict(ok ? 'ok' : 'no', ok ? 'درست گفتی!' : 'اشتباه بود', 'گرون‌تر بود') + V.hero(DEMO_SECOND, ok ? 'correct' : 'wrong', false, 'up', DEMO_SECOND_PRICE);
+    dock = V.keys(ok ? 'ok' : 'no', t.pick);
+  }
+  const cr = c.continueRule, plays = S.boot ? S.boot.quota.playsPerDay : 3;
+  const doneText = `هر روز ${fa(plays)} دست داری.${cr.enabled && cr.cap > 0 ? ` اگه اشتباه کنی و دیجی‌کوین کافی داشته باشی، در هر دست ${cr.cap === 1 ? 'یک بار' : `تا ${fa(cr.cap)} بار`} می‌تونی با ${fa(cr.cost)} دیجی‌کوین ادامه بدی.` : ''}`;   // CP-29, numbers from config
+  const final = st.id === 'done';
+  const ov = V.tourOverlay({
+    id: st.id, index: t.i, total: TOUR.length, title: st.title, text: final ? doneText : st.text, target: st.target, interact: !!st.interact,
+    hint: st.interact ? st.hint : null, closable: t.mode === 'guide', final, busy: t.busy, error: t.error,
+    action: st.interact ? null : final ? 'tour-finish' : 'tour-next', actionLabel: final ? (t.mode === 'first' ? 'شروع کن' : 'فهمیدم') : 'بعدی',
+  });
+  return V.play(top, V.track(score, c.checkpoints, ph === 'answered' && ok), main, dock, ov, null);
+}
+
+let tourListeners = false;
+function afterTourRender() {
+  positionTour();
+  requestAnimationFrame(positionTour);                             // again once fonts and the card move have laid out
+  if (!tourListeners) {
+    tourListeners = true;
+    const again = () => { if (S.view === 'G02.TOUR') requestAnimationFrame(positionTour); };
+    window.addEventListener('resize', again);
+    window.addEventListener('orientationchange', again);
+    if (window.visualViewport) window.visualViewport.addEventListener('resize', again);
+    document.addEventListener('scroll', again, true);              // any scrolled container moves the target
+    if (window.ResizeObserver) new ResizeObserver(again).observe(root);
+  }
+  const st = TOUR[S.ui.tour.i];
+  requestAnimationFrame(() => {                                    // keyboard and screen readers land on the lesson
+    const target = st.interact ? root.querySelector(`[data-tour="${st.target}"] button:not([disabled]), button[data-tour="${st.target}"]`) : null;
+    const b = target || root.querySelector('.pe-tour__tip .v3-btn:not([disabled])') || root.querySelector('.pe-tour__tip');
+    if (b && b.focus) b.focus({ preventScroll: true });
+  });
+}
+/** Places the hole, the four blockers and the tip around the target, inside the safe area, after layout. */
+function positionTour() {
+  const ov = root.querySelector('.pe-tour'); if (!ov || !S.ui.tour) return;
+  const st = TOUR[S.ui.tour.i], R = root.getBoundingClientRect(), W = R.width, H = R.height;
+  const stageEl = root.querySelector('.v3-stage'), cs = stageEl ? getComputedStyle(stageEl) : null;
+  const safeT = cs ? parseFloat(cs.paddingTop) || 0 : 0, safeB = cs ? parseFloat(cs.paddingBottom) || 0 : 0;
+  const set = (el, x, y, w, h) => { if (el) Object.assign(el.style, { left: x + 'px', top: y + 'px', width: Math.max(0, w) + 'px', height: Math.max(0, h) + 'px' }); };
+  const blk = k => ov.querySelector(`[data-block="${k}"]`), hole = ov.querySelector('[data-hole]'), tip = ov.querySelector('[data-tip]');
+  const els = st.target ? st.target.split(',').map(k => root.querySelector(`.v3-screen [data-tour="${k}"]`)).filter(Boolean) : [];
+  if (!els.length) {                                               // centred card: everything dimmed and blocked
+    set(hole, W / 2, H / 2, 0, 0); set(blk('t'), 0, 0, W, H); ['r', 'b', 'l', 'hole'].forEach(k => set(blk(k), 0, 0, 0, 0));
+    if (tip) { const th = tip.offsetHeight; Object.assign(tip.style, { top: Math.max(safeT + 16, (H - th) / 2) + 'px' }); }
+    return;
+  }
+  const rs = els.map(e => e.getBoundingClientRect()), pad = 8;
+  let x = Math.min(...rs.map(r => r.left)) - R.left - pad, y = Math.min(...rs.map(r => r.top)) - R.top - pad;
+  let x2 = Math.max(...rs.map(r => r.right)) - R.left + pad, y2 = Math.max(...rs.map(r => r.bottom)) - R.top + pad;
+  x = Math.max(4, x); y = Math.max(4, y); x2 = Math.min(W - 4, x2); y2 = Math.min(H - 4, y2);
+  set(hole, x, y, x2 - x, y2 - y);
+  set(blk('t'), 0, 0, W, y); set(blk('b'), 0, y2, W, H - y2); set(blk('l'), 0, y, x, y2 - y); set(blk('r'), x2, y, W - x2, y2 - y); set(blk('hole'), x, y, x2 - x, y2 - y);
+  if (!tip) return;
+  const th = tip.offsetHeight, gap = 14, below = y2 + gap, above = y - gap - th;
+  let top = below + th <= H - safeB - 12 ? below : above >= safeT + 12 ? above : Math.max(safeT + 12, H - safeB - 12 - th);
+  tip.style.top = top + 'px';
+  tip.dataset.side = top >= y2 ? 'below' : top + th <= y ? 'above' : 'over';
+}
+
+// ------------------------------------------------------------------------------------------------ start / resume
 export async function startRun() {
   if (S.view === 'G01.STARTING') return;
   go('G01.STARTING');
@@ -290,7 +491,7 @@ export async function startRun() {
     S.keys.start = null;
     S.gen++;
     S.result = null; S.products = null; S.share = null; S.ended = null;
-    resetRunUi(); S.ui.lossGuided = false;
+    resetRunUi(); S.ui.histPositioned = null;
     S.run = st.run; S.ref = st.run.reference;
     host.setBackHandler(onBack);
     go('G03.READY');
@@ -319,7 +520,7 @@ function applyRun(run, context) {
   const prev = S.run;
   S.run = run; S.ref = run.reference;
   if (run.state === 'FINISHED') {
-    // the offer ended while a payment was unresolved: show what happened to the payment before the result (G06.FAILED_END*, R-43)
+    // the run ended while a payment was unresolved: show what happened to the payment before the result (G06.FAILED_END*)
     if (S.op && S.op.operationId && run.finishReason === 'continue_failed' && ['G06.PENDING', 'G06.UNKNOWN'].includes(S.view))
       return api.operation(S.op.operationId).then(o => onOperation(o, true)).catch(() => finished(run));
     if (S.view.startsWith('G06.FAILED_END') || S.view === 'G06.REFUNDED') return render();   // the sheet's «دیدن نتیجه» leads on
@@ -345,11 +546,16 @@ function applyRun(run, context) {
   }
   S.q = null;
   if (run.state === 'AWAITING_OFFER') { go(S.fb && S.fb.kind === 'timeout' ? 'G03.TIMEOUT' : 'G03.WRONG_FEEDBACK'); return later(context === 'resume' ? 600 : 0, activateOffer); }
-  if (run.state === 'OFFER_OPEN') { S.offer = run.offer; S.op = null; go('G05.OFFER'); return tickLoop(); }
+  if (run.state === 'OFFER_OPEN') {
+    if (!S.offer || S.offer.offerId !== run.offer.offerId) S.ui.offerOver = false;
+    S.offer = run.offer; S.op = null;
+    if (['G06.FAILED_END'].includes(S.view)) return render();     // a rejection after the visible window: the sheet waits for the run's end
+    go('G05.OFFER'); return tickLoop();
+  }
   if (run.state === 'PAYMENT_PENDING') {
     S.offer = run.offer;
     if (!S.op || S.op.operationId !== (run.operation && run.operation.operationId)) S.op = { operationId: run.operation ? run.operation.operationId : null, status: 'pending', since: now() };
-    go('G06.PENDING'); tickLoop(); return pollOperation();
+    go(S.view === 'G06.UNKNOWN' ? 'G06.UNKNOWN' : 'G06.PENDING'); tickLoop(); return pollOperation();
   }
 }
 
@@ -386,17 +592,22 @@ export async function reveal() {
   }
 }
 
+/**
+ * The selection is recorded synchronously (both keys lock, the picked one shows its spinner, the countdown gives way to
+ * the processing state) and sent at once. From then on the local timer has no say: reaching its zero neither cancels the
+ * answer nor shows a loss; only the server's settled result moves the screen. A tap after the visible window is ignored.
+ */
 export async function answer(choice) {
   const q = S.q;
-  if (!q || q.pick || S.view !== 'G03.QUESTION_ACTIVE' || S.ui.offline) return;   // one request per question
-  if (clock.serverNow() >= clock.ms(q.inputDeadline)) return;                       // keys lock at the input deadline (R-45)
+  if (!q || q.pick || q.locked || S.view !== 'G03.QUESTION_ACTIVE' || S.ui.offline) return;   // one selection per question
+  if (clock.serverNow() >= clock.ms(q.inputDeadline)) { lockQuestion(q); return; }             // the visible window is over
   q.pick = choice; q.key ||= newKey();
-  S.ui.morph = 0; go('G03.ANSWER_PENDING');                                         // the timer keeps running (R-18)
+  S.ui.morph = 0; go('G03.ANSWER_PENDING');
   const g = S.gen;
-  // retry after 1.5 s with the same key, up to 2 times, then read the run (handoff)
+  // retry after 1.5 s with the same key, up to 2 times; a retry never creates a second answer (the server keeps the first)
   for (let i = 0; i < 3; i++) {
     try {
-      const ans = await Promise.race([api.answer(q.questionId, choice, q.key), new Promise((_, rej) => setTimeout(() => rej(new ApiError(0, 'SLOW')), 1500 + i * 1000))]);
+      const ans = await Promise.race([api.answer(q.questionId, choice, q.key), sleep(1500 + i * 1000).then(() => { throw new ApiError(0, 'SLOW'); })]);
       if (g !== S.gen || S.q !== q) return;
       return onAnswer(ans, q);
     } catch (e) {
@@ -406,19 +617,9 @@ export async function answer(choice) {
       return handleError(e);
     }
   }
-  // No response after the retries: read the run until the server has settled this question (answer or timeout). The
-  // answer stays locked, so reading never stops while this question is current: every 700 ms for 12 reads, then
-  // G10.RESUMING with a backoff capped at 10 s (a reconnect, a return to the app or a server error still take over).
-  for (let i = 0; g === S.gen && S.q === q; i++) {
-    if (i === 12) { S.ui.resuming = true; render(); }
-    try {
-      const run = await api.run(S.run.runId);
-      if (g !== S.gen || S.q !== q) return;
-      if (run.state !== 'QUESTION_OPEN' || run.question.questionId !== q.questionId) return applyMissFromState(run, q);
-    } catch (e) { if (!(e instanceof ApiError) || !e.network) return handleError(e); }
-    await new Promise(r => setTimeout(r, i < 12 ? 700 : Math.min(10000, 700 * 2 ** (i - 11))));
-  }
+  return awaitSettlement(q);                                    // no response: read the run by the question's identity
 }
+function lockQuestion(q) { if (q.locked || q.pick) return; q.locked = true; render(); awaitSettlement(q); }
 
 /** An answer the server accepted but whose response was lost is shown from the run's lastResult, never as a loss. */
 function answerFromRun(run, q) {
@@ -431,15 +632,43 @@ function answerFromRun(run, q) {
 }
 
 function applyMissFromState(run, q) {
-  if (run.state === 'QUESTION_OPEN' && run.question && run.question.questionId === q.questionId) { S.run = run; return pollAfterDeadline(q); }
-  S.ui.resuming = false;
+  if (run.state === 'QUESTION_OPEN' && run.question && run.question.questionId === q.questionId) { S.run = run; return awaitSettlement(q); }
+  S.ui.resuming = false; S.ui.slowSettle = false;
   const ans = answerFromRun(run, q);
   if (ans) return onAnswer(ans, q);
   applyRun(run);
 }
 
+/**
+ * One reader for a question whose outcome is the server's to settle (an answer in flight or lost, or the visible zero
+ * reached without one). A timeout cannot be settled before the arrival deadline, so it waits for that first; then it
+ * reads the run every 700 ms for 12 reads and with a backoff capped at 10 s after that, showing «بررسی دوباره».
+ */
+async function awaitSettlement(q) {
+  if (q.polling) return;
+  q.polling = true;
+  const g = S.gen;
+  try {
+    const wait = clock.ms(q.acceptDeadline) + 300 - clock.serverNow();
+    if (!q.pick && wait > 0) await sleep(wait);
+    for (let i = 0; g === S.gen && S.q === q; i++) {
+      if (i === 12 && !S.ui.slowSettle) { S.ui.slowSettle = true; render(); }
+      if (await readSettlement(q, g)) return;
+      await sleep(i < 12 ? 700 : Math.min(10000, 700 * 2 ** (i - 11)));
+    }
+  } finally { q.polling = false; }
+}
+async function readSettlement(q, g) {
+  try {
+    const run = await api.run(S.run.runId);
+    if (g !== S.gen || S.q !== q) return true;
+    if (run.state !== 'QUESTION_OPEN' || run.question.questionId !== q.questionId) { S.ui.slowSettle = false; applyMissFromState(run, q); return true; }
+  } catch (e) { if (!(e instanceof ApiError) || !e.network) { handleError(e); return true; } }
+  return false;
+}
+
 function onAnswer(ans, q) {
-  S.run = ans.run;
+  S.run = ans.run; S.ui.slowSettle = false;
   S.fb = { questionId: q.questionId, kind: ans.result, choice: ans.choice, direction: ans.direction, revealedPrice: ans.revealedPrice, equal: ans.equalPrices, product: q.product };
   S.q = null;
   S.ui.morph = DUR.verdictMs;                                  // hidden price tag → price plate, ask row → verdict
@@ -454,7 +683,7 @@ function onAnswer(ans, q) {
       S.fb = null;
       if (ans.runFinished) return finished(S.run);
       S.ui.cpDue = reached || null;
-      S.ui.morph = DUR.promoteMs; go('G03.READY');             // one continuous move into the reference slot (UX-2)
+      S.ui.morph = DUR.promoteMs; go('G03.READY');             // one continuous move into the first product's slot (UX-2)
       if (reached) later(DUR.promoteMs + 60, () => { if (S.ui.cpDue === reached) openCp(reached); });
     });
     return;
@@ -486,7 +715,7 @@ async function activateOffer() {
     delete S.keys[intent];                                      // answered: this miss's activation is done
     S.run = act.run;
     if (act.balance != null) S.balance = act.balance;
-    if (act.offer && (act.run.state === 'OFFER_OPEN' || act.run.state === 'PAYMENT_PENDING')) { S.offer = act.offer; go('G05.OFFER'); return tickLoop(); }
+    if (act.offer && (act.run.state === 'OFFER_OPEN' || act.run.state === 'PAYMENT_PENDING')) { S.offer = act.offer; S.ui.offerOver = false; go('G05.OFFER'); return tickLoop(); }
     S.ui.noOffer = act.noOfferReason;
     if (act.noOfferReason === 'no_funds') { go('G05.NO_FUNDS'); return later(DUR.missHoldMs, () => finished(S.run)); }   // no offer, not even disabled (R-63)
     finished(act.run);
@@ -494,9 +723,15 @@ async function activateOffer() {
 }
 
 // ------------------------------------------------------------------------------------------------ continue / skip / leave
+/**
+ * Extra-life purchase: one tap locks both buttons and shows the loading state before the request leaves; the request
+ * is admitted by its arrival time (offer start + 15 s), so reaching the visible zero while it is in flight changes
+ * nothing on screen: the game resumes only after the server confirms the charge, and a definitive failure ends the
+ * offer as the server decides. A lost response is recovered by the operation's own id, never by a second purchase.
+ */
 export async function continueOffer() {
-  if (!S.offer || S.op || S.ui.offline) return;
-  if (clock.serverNow() >= clock.ms(S.offer.deadline)) return;
+  if (!S.offer || S.op || S.ui.offline || S.ui.offerOver) return;
+  if (clock.serverNow() >= clock.ms(S.offer.deadline)) return offerTimeUp();
   const offerId = S.offer.offerId;
   S.op = { key: S.keys['continue:' + offerId] ||= newKey(), status: 'pending', since: now(), operationId: null };
   go('G06.PENDING');
@@ -504,7 +739,7 @@ export async function continueOffer() {
   try {
     let opv;
     try { opv = await api.continueOffer(offerId, S.op.key); }
-    catch (e) { if (e instanceof ApiError && e.network) opv = await api.continueOffer(offerId, S.op.key); else throw e; }   // 3 s, then poll
+    catch (e) { if (e instanceof ApiError && e.network) opv = await api.continueOffer(offerId, S.op.key); else throw e; }   // same key
     if (g !== S.gen) return;
     onOperation(opv);
   } catch (e) {
@@ -518,6 +753,7 @@ export async function continueOffer() {
 
 function onOperation(opv, fromPoll = false) {
   const op = S.op || {};
+  if (op.operationId && opv.operationId !== op.operationId) return;   // a late response of another operation
   Object.assign(op, { operationId: opv.operationId, status: opv.status, chargeStatus: opv.chargeStatus, refundStatus: opv.refundStatus });
   S.op = op;
   if (opv.balance != null) S.balance = opv.balance;
@@ -525,13 +761,15 @@ function onOperation(opv, fromPoll = false) {
   if (opv.status === 'succeeded') {
     S.op = null; S.offer = null; S.fb = null; S.ui.afterContinue = true;
     toast(`ادامه ثبت شد؛ ${fa(cfg().continueRule.cost)} دیجی‌کوین کسر شد`);
-    S.ui.morph = DUR.promoteMs; return go('G06.SUCCESS');      // same run, same reference, score and checkpoints kept (R-07)
+    S.ui.morph = DUR.promoteMs; return go('G06.SUCCESS');      // same run, same first product, score and checkpoints kept (R-07)
   }
   if (opv.status === 'failed') {
     delete S.keys['continue:' + (S.offer && S.offer.offerId)];   // a retry after a rejected debit is a new request, not a replay
     S.op = null;
     if (S.offer && clock.serverNow() < clock.ms(S.offer.deadline) && opv.run.state === 'OFFER_OPEN') return go('G06.FAILED_RETRY');
-    return go('G06.FAILED_END');
+    go('G06.FAILED_END');
+    if (opv.run.state !== 'FINISHED') later(1000, reconcileRun);  // the server ends the offer; «دیدن نتیجه» ends it now
+    return;
   }
   if (opv.status === 'refunded') return go('G06.REFUNDED');
   if (opv.status === 'expired_unconfirmed') { go('G06.FAILED_END.UNCONFIRMED'); return watchRefund(opv.operationId); }
@@ -539,13 +777,13 @@ function onOperation(opv, fromPoll = false) {
   if (!fromPoll) pollOperation();
 }
 
-async function pollOperation() {   // 1 s backing off to 5 s; G06.UNKNOWN after 5 s; stop at the offer deadline (R-43)
+async function pollOperation() {   // 1 s backing off to 5 s; G06.UNKNOWN (with «بررسی دوباره») after 5 s; until the server settles
   if (S.ui.polling) return;
   S.ui.polling = true;
   const g = S.gen; let delay = 1000;
   try {
     while (g === S.gen && S.op && ['G06.PENDING', 'G06.UNKNOWN'].includes(S.view)) {
-      await new Promise(r => setTimeout(r, delay)); delay = Math.min(5000, delay * 1.6);
+      await sleep(delay); delay = Math.min(5000, delay * 1.6);
       if (g !== S.gen || !S.op) return;
       if (S.view === 'G06.PENDING' && now() - S.op.since > 5000) go('G06.UNKNOWN');
       if (!S.op.operationId) { await reconcileRun(); continue; }
@@ -556,11 +794,11 @@ async function pollOperation() {   // 1 s backing off to 5 s; G06.UNKNOWN after 
   } finally { S.ui.polling = false; }
 }
 
-/** A late-confirmed debit is refunded by the server (R-43); while its sheet is open, look for the refund for a bounded time. */
+/** A late-confirmed debit is refunded by the server; while its sheet is open, look for the refund for 2 minutes (the reconciliation backs off to 60 s). */
 async function watchRefund(operationId) {
   const g = S.gen;
-  for (let i = 0; i < 12; i++) {
-    await new Promise(r => setTimeout(r, 5000));
+  for (let i = 0; i < 24; i++) {
+    await sleep(5000);
     if (g !== S.gen || S.view !== 'G06.FAILED_END.UNCONFIRMED') return;
     try { const o = await api.operation(operationId); if (o.balance != null) S.balance = o.balance; if (o.status === 'refunded') { S.op = { ...S.op, ...o }; return go('G06.REFUNDED'); } }
     catch (e) { /* the sheet stays; the result page shows reward status */ }
@@ -572,6 +810,20 @@ async function reconcileRun() {
   const g = S.gen, runId = S.run.runId;
   try { const run = await api.run(runId); if (g === S.gen && S.run && S.run.runId === runId) applyRun(run); }
   catch (e) { if (g === S.gen && (!(e instanceof ApiError) || !e.network)) handleError(e); }
+}
+
+/** The visible offer window is over and nothing was bought: the purchase button locks; the server ends the offer at its arrival deadline. */
+function offerTimeUp() {
+  if (S.ui.offerOver || S.view !== 'G05.OFFER') return;
+  S.ui.offerOver = true; render();
+  const g = S.gen, until = S.offer ? clock.ms(S.offer.acceptDeadline || S.offer.deadline) + 1500 : 0;
+  (async () => {
+    while (g === S.gen && S.view === 'G05.OFFER' && S.ui.offerOver) {
+      await sleep(clock.serverNow() < until ? Math.max(300, until - clock.serverNow()) : 1500);
+      if (g !== S.gen || S.view !== 'G05.OFFER') return;
+      await reconcileRun();
+    }
+  })();
 }
 
 export async function skip() {
@@ -595,33 +847,54 @@ export async function leaveConfirmed() {
   try { const run = await api.leave(S.run.runId, key); finished(run); } catch (e) { handleError(e); }
 }
 
-// ------------------------------------------------------------------------------------------------ checkpoint (UX-3, F-01)
+// ------------------------------------------------------------------------------------------------ checkpoint (G04)
+/**
+ * Root cause of the duplicate celebration: the overlay was part of the screen markup, and the screen is rebuilt on
+ * every render — the guard timer re-rendered at 1.2 s (and a toast, an image load or a reconnect could too), so the
+ * overlay's entrance (character, burst, confetti) played again. It is now mounted ONCE into its own host that render()
+ * never touches, only for a (run, checkpoint) pair not shown before; a replayed or recovered answer cannot open it twice.
+ */
 let cpToken = 0, cpTimers = [];
 function openCp(c) {
-  const token = ++cpToken;
-  S.ui.cp = c; S.ui.cpDue = null; S.ui.cpAt = now(); S.ui.cpAutoStarted = false;
+  const k = S.run.runId + ':' + c.checkpointId;
+  if (S.ui.cpShown.has(k)) return;                            // once per checkpoint per run
+  S.ui.cpShown.add(k);
+  const token = ++cpToken, cps = cfg().checkpoints, idx = cps.findIndex(x => x.checkpointId === c.checkpointId);
+  S.ui.cp = c; S.ui.cpDue = null; S.ui.cpAt = now();
   haptic('checkpoint');
-  render();
-  cpTimers.push(later(DUR.cpGuardMs, () => { if (cpToken === token && S.ui.cp) { render(); const b = $('.v3-cp__go', root); if (b) b.focus({ preventScroll: true }); } }));
+  // «دریافت کردی» needs a confirmed grant; checkpoint rewards are paid at the end of the run (spec), so not yet here
+  cpEl.innerHTML = V.cpOverlay(c, cps.find(x => x.requiredCorrect > c.requiredCorrect), idx, false, DUR.cpGuardMs, cfg().checkpointAutoContinueMs);
+  screenEl.inert = true;
+  root.dataset.view = stateId();
+  cpTimers.push(later(DUR.cpGuardMs, () => {
+    if (cpToken !== token) return;
+    const ov = $('.v3-cp', cpEl); if (!ov) return;
+    ov.setAttribute('data-ready', ''); const b = $('.v3-cp__go', cpEl); b.removeAttribute('aria-disabled'); b.focus({ preventScroll: true });
+  }));
   cpTimers.push(later(DUR.cpEntranceMs, () => {                // the automatic hold is measured once the content is readable
-    if (cpToken !== token || !S.ui.cp) return;
-    S.ui.cpAutoStarted = true; S.ui.cpAutoStartedAt = now();
-    const bar = $('[data-cpauto]', root); if (bar) requestAnimationFrame(() => { bar.style.transform = 'scaleX(1)'; });
+    if (cpToken !== token) return;
+    const bar = $('[data-cpauto]', cpEl); if (bar) requestAnimationFrame(() => { bar.style.transform = 'scaleX(1)'; });
     cpTimers.push(later(cfg().checkpointAutoContinueMs, () => closeCp(token, 'auto')));
   }));
+}
+function unmountCp() {
+  cpToken++;
+  cpTimers.forEach(clearTimeout); cpTimers = [];
+  S.ui.cp = null;
+  if (cpEl) cpEl.innerHTML = '';
+  if (screenEl) screenEl.inert = false;
 }
 /** Tap and automatic completion converge here; the token makes the second one (or a stale timer) a no-op. */
 export function closeCp(token = cpToken, source = 'tap') {
   if (!S.ui.cp || token !== cpToken) return;
   if (source === 'tap' && now() < S.ui.cpAt + DUR.cpGuardMs) return;   // the earning tap or a double tap cannot dismiss it
-  cpToken++;
-  cpTimers.forEach(clearTimeout); cpTimers = [];
-  S.ui.cp = null; S.ui.guardUntil = now() + DUR.afterCpGuardMs;
+  unmountCp();
+  S.ui.guardUntil = now() + DUR.afterCpGuardMs;
   render();
 }
 
 // ------------------------------------------------------------------------------------------------ timers
-let raf = 0, pollingDeadline = false, quotaTry = { at: null, n: 0, next: 0 };
+let raf = 0, quotaTry = { at: null, n: 0, next: 0 };
 
 /**
  * The daily reset was reached on a quota screen: ask the server (never treat a local zero as permission to play).
@@ -634,13 +907,6 @@ async function quotaReset() {
   if (quotaTry.n >= 5 || now() < quotaTry.next) return;
   quotaTry.n++; quotaTry.next = now() + 2000;
   if (S.view.startsWith('G01.')) return boot();
-  if (!S.view.startsWith('G07.') || !S.result) return;
-  const g = S.gen, runId = S.result.runId;
-  try {
-    const b = await api.bootstrap();
-    if (g !== S.gen || !S.result || S.result.runId !== runId) return;
-    S.boot = b; S.result = { ...S.result, quota: b.quota }; render();
-  } catch (e) { /* the result keeps its last known quota; starting a run is still decided by the server */ }
 }
 function tickLoop() {
   if (raf) return;
@@ -648,17 +914,22 @@ function tickLoop() {
     raf = 0;
     const v = S.view;
     if ((v === 'G03.QUESTION_ACTIVE' || v === 'G03.ANSWER_PENDING') && S.q) {
-      const tm = $('[data-timer]', root), n = timerNow();
-      if (tm) { tm.style.setProperty('--p', n.p); tm.classList.toggle('is-low', n.mode === 'low'); const b = tm.querySelector('b'); if (b && b.textContent !== n.t) { b.textContent = n.t; tm.setAttribute('aria-label', n.t + ' ثانیه'); } }
-      if (n.rem <= 0 && !S.q.locked) { S.q.locked = true; if (!S.q.pick) render(); }   // keys lock at the input deadline
-      if (n.rem <= 0 && !S.q.pick && !pollingDeadline) pollAfterDeadline(S.q);
+      const q = S.q, n = timerNow();
+      if (!q.pick && !q.locked) {
+        const tm = $('[data-timer]', root);
+        if (tm) { tm.style.setProperty('--p', n.p); tm.style.setProperty('--tc', n.tc); tm.classList.toggle('is-low', n.low); const b = tm.querySelector('b'); if (b && b.textContent !== n.t) { b.textContent = n.t; tm.setAttribute('aria-label', n.t + ' ثانیه'); } }
+        if (n.rem <= 0) lockQuestion(q);                            // the visible zero without a selection: input locks
+      }
       if (root.dataset.view !== stateId()) root.dataset.view = stateId();
       raf = requestAnimationFrame(step); return;
     }
-    if (['G05.OFFER', 'G06.PENDING', 'G06.UNKNOWN', 'G06.FAILED_RETRY'].includes(v) && S.offer) {
+    if (['G05.OFFER', 'G06.FAILED_RETRY'].includes(v) && S.offer) {
       const rg = $('[data-ring]', root), rem = Math.max(0, clock.ms(S.offer.deadline) - clock.serverNow()), c = cfg();
       if (rg) { const s = fa(Math.ceil(rem / 1000)); rg.style.setProperty('--p', (rem / c.offerMs).toFixed(3)); rg.classList.toggle('is-low', rem <= 3000); const b = rg.querySelector('b'); if (b && b.textContent !== s) b.textContent = s; }
-      if (rem <= 0 && !S.ui.offerEnded) { S.ui.offerEnded = true; later(300, () => { S.ui.offerEnded = false; reconcileRun(); }); }   // the ring never pauses; the server ends the offer at its deadline
+      if (rem <= 0) {                                               // the visible window is over; the server ends the offer
+        if (v === 'G05.OFFER') offerTimeUp();
+        else if (!S.ui.offerEnded) { S.ui.offerEnded = true; go('G06.FAILED_END'); later(300, () => { S.ui.offerEnded = false; reconcileRun(); }); }
+      }
       raf = requestAnimationFrame(step); return;
     }
     const cd = $('[data-countdown]', root);
@@ -672,91 +943,93 @@ function tickLoop() {
   raf = requestAnimationFrame(step);
 }
 
-/** After the input deadline: ask the server at acceptDeadline + 300 ms, then every 500 ms up to 4 times, then G10.RESUMING. */
-async function pollAfterDeadline(q) {
-  if (pollingDeadline) return;
-  pollingDeadline = true;
-  const g = S.gen;
-  try {
-    const wait = clock.ms(q.acceptDeadline) + 300 - clock.serverNow();
-    if (wait > 0) await new Promise(r => setTimeout(r, wait));
-    for (let i = 0; i < 4 + 6; i++) {
-      if (g !== S.gen || S.q !== q || q.pick) return;
-      if (i === 4) S.ui.resuming = true, render();
-      try {
-        const run = await api.run(S.run.runId);
-        if (g !== S.gen || S.q !== q) return;
-        if (run.state !== 'QUESTION_OPEN' || run.question.questionId !== q.questionId) { S.ui.resuming = false; return applyMissFromState(run, q); }
-      } catch (e) { if (!(e instanceof ApiError) || !e.network) return handleError(e); }
-      await new Promise(r => setTimeout(r, 500));
-    }
-  } finally { pollingDeadline = false; }
-}
-
-// ------------------------------------------------------------------------------------------------ results
+// ------------------------------------------------------------------------------------------------ End Screen (G07)
 function finished(run) {
   S.gen++;
-  host.setBackHandler(null);
   S.run = run; S.q = null; S.offer = null; S.op = null;
   resetRunUi();
   S.ended = endedFrom(run);
+  host.setBackHandler(null);
   if (run.finishReason === 'inactive') return go('G10.INACTIVITY_END');
   if (run.finishReason === 'replaced') return go('G11.OTHER_DEVICE');
   if (run.finishReason === 'blocked') return go('G11.BLOCKED');
   showResult();
 }
 
+/**
+ * Shown only for a finished run. Back (on screen or the device's) goes to the start screen through the normal entry:
+ * the local run state is dropped, nothing is resubmitted, and no run or payment is created.
+ */
 export async function showResult() {
   const runId = (S.ended && S.ended.runId) || (S.run && S.run.runId);
   if (!runId) return boot();
-  S.result = null; S.share = null; S.ui.codeState = null; go('G07.LOADING');
+  S.result = null; S.share = null; S.products = null; S.ui.codeState = null; S.ui.historyState = 'loading';
+  host.setBackHandler(() => { if (S.view.startsWith('G07.')) { if (S.share) { S.share = null; render(); } else boot(); return true; } return false; });
+  go('G07.LOADING');
   const g = S.gen;
+  if (feat('products')) loadHistory(runId, g);
   for (let i = 0; i < 4; i++) {                               // quiet retries with backoff
     try { S.result = await api.result(runId); break; }
-    catch (e) { if (i === 3 || !(e instanceof ApiError) || !(e.network || e.status >= 500)) { if (g === S.gen) handleError(e); return; } await new Promise(r => setTimeout(r, 600 * (i + 1))); }
+    catch (e) { if (i === 3 || !(e instanceof ApiError) || !(e.network || e.status >= 500)) { if (g === S.gen) handleError(e); return; } await sleep(600 * (i + 1)); }
   }
   if (g !== S.gen) return;
-  S.balance = S.result.balance ?? S.balance;
   if (S.boot) S.boot.quota = S.result.quota;
   go('G07.STANDARD');
   refreshResult(runId, g);
 }
 
-async function refreshResult(runId, g) {   // pending rewards: every 2 s up to 10 s; pending code: every 2 s up to 20 s (handoff)
+async function loadHistory(runId, g) {
+  S.ui.historyState = 'loading';
+  try {
+    const list = await api.products(runId);
+    if (g !== S.gen || !S.view.startsWith('G07.')) return;
+    S.products = list; S.ui.historyState = 'ready';
+  } catch (e) { if (g !== S.gen) return; S.ui.historyState = 'error'; }
+  render();
+}
+
+async function refreshResult(runId, g) {   // a pending reward: every 2 s up to 10 s; a pending code: every 2 s up to 20 s (handoff)
   const started = now();
   while (g === S.gen && S.view.startsWith('G07.')) {
     const R = S.result;
-    const rewardPending = [R.checkpointReward, R.streak && R.streak.reward].some(x => x && x.status === 'pending');
+    const rewardPending = R.checkpointReward && R.checkpointReward.status === 'pending';
     const codePending = R.campaignCode && R.campaignCode.status === 'pending';
     const t = now() - started;
     if (!((rewardPending && t < 10000) || (codePending && t < 20000))) return;
-    await new Promise(r => setTimeout(r, 2000));
+    await sleep(2000);
     if (g !== S.gen) return;
-    try { const r = await api.result(runId); if (g !== S.gen || !S.result || S.result.runId !== runId) return; S.result = r; S.balance = r.balance ?? S.balance; render(); } catch (e) { return; }
+    try { const r = await api.result(runId); if (g !== S.gen || !S.result || S.result.runId !== runId) return; S.result = r; render(); } catch (e) { return; }
   }
 }
 
-export async function showProducts() {
-  const runId = S.result && S.result.runId; if (!runId || !feat('products')) return;
-  go('G08.LOADING');
-  const g = S.gen, mine = () => g === S.gen && S.view === 'G08.LOADING' && S.result && S.result.runId === runId;   // still this request's screen
-  try {
-    const list = S.products && S.products.runId === runId ? S.products : await api.products(runId);
-    if (!mine()) return;
-    S.products = list; go('G08.LIST');
-  } catch (e) { if (mine()) go('G08.ERROR'); }
+/** After every End Screen render: restore the player's own scroll; once per run, bring the losing turn into view. */
+function afterResultRender() {
+  const sc = root.querySelector('[data-hscroll="history"]'); if (!sc) return;
+  const runId = S.products && S.products.runId;
+  if (S.ui.histPositioned === runId && S.ui.histScroll != null) sc.scrollLeft = S.ui.histScroll;
+  sc.addEventListener('scroll', () => { if (S.ui.histPositioned === runId) S.ui.histScroll = sc.scrollLeft; }, { passive: true });
+  if (S.ui.histPositioned === runId) return;
+  const place = () => {
+    const s2 = root.querySelector('[data-hscroll="history"]'); if (!s2 || S.ui.histPositioned === runId) return;
+    const target = s2.querySelector('[data-loss]') || s2.lastElementChild; if (!target) return;
+    target.scrollIntoView({ inline: 'center', block: 'nearest', behavior: 'auto' });   // RTL-aware: the browser maps inline to the scroll direction
+    if (target.hasAttribute('data-loss')) target.classList.add('is-guide');              // one brief emphasis
+    S.ui.histPositioned = runId; S.ui.histScroll = s2.scrollLeft;
+  };
+  // after layout (and fonts) are ready, so the measured positions are final
+  requestAnimationFrame(() => requestAnimationFrame(() => (document.fonts && document.fonts.ready ? document.fonts.ready : Promise.resolve()).then(place)));
 }
 
-export async function openProduct(link, id) {
+export async function openProduct(link) {
   const ok = await host.openProduct(link);
-  if (!ok) { toast('صفحه کالا باز نشد. دوباره امتحان کن.', true, 'G08.LINK_FAILED'); render(); }
+  if (!ok) { toast('صفحه کالا باز نشد. دوباره امتحان کن.', true, 'G07.LINK_FAILED', true); render(); }
 }
 
 export async function prepareShare() {
   if (S.ui.shareBusy || !S.result || !feat('share')) return;
   const g = S.gen, runId = S.result.runId, mine = () => g === S.gen && S.result && S.result.runId === runId;
   S.ui.shareBusy = true; render();
-  try { const sh = await api.share(runId); if (!mine()) return; S.share = sh; if (!feat('streak')) S.share.streakDays = null; }
+  try { const sh = await api.share(runId); if (!mine()) return; S.share = sh; }
   catch (e) { if (!mine()) return; S.share = null; toast('تصویر اشتراک ساخته نشد. دوباره امتحان کن.', true, 'G09.FAILED', true); }
   finally { if (mine()) { S.ui.shareBusy = false; render(); } }
 }
@@ -769,7 +1042,7 @@ export async function sendShare() {
   S.share = null; render();
 }
 
-/** Share image (proposed 1080×1920; no player name, R-12; image only, no invented deep link, R-56). */
+/** Share image (proposed 1080×1920; no player name, R-12; no streak; image only, no invented deep link, R-56). */
 async function drawShareImage(s) {
   if (document.fonts && document.fonts.ready) await document.fonts.ready;
   const c = document.createElement('canvas'); c.width = 1080; c.height = 1920;
@@ -782,7 +1055,7 @@ async function drawShareImage(s) {
   x.font = '900 420px Vazirmatn, sans-serif'; x.fillText(fa(s.score), 540, 1060);
   x.font = '800 64px Vazirmatn, sans-serif'; x.fillText('پاسخ درست در یک دست', 540, 1180);
   if (s.checkpointTitle) { x.fillStyle = '#FFC633'; x.font = '900 72px Vazirmatn, sans-serif'; x.fillText(s.checkpointTitle, 540, 1400); x.fillStyle = '#FFFFFF'; }
-  x.font = '700 52px Vazirmatn, sans-serif'; x.fillText(s.streakDays == null ? 'تو چندتا می‌زنی؟' : `استریک ${fa(s.streakDays)} روزه. تو چندتا می‌زنی؟`, 540, 1700);
+  x.font = '700 52px Vazirmatn, sans-serif'; x.fillText('تو چندتا می‌زنی؟', 540, 1700);
   return new Promise(res => c.toBlob(res, 'image/png'));
 }
 
@@ -809,6 +1082,8 @@ function setOffline(off) {
 
 export function init(el) {
   root = el;
+  root.innerHTML = '<div class="pe-screenhost"></div><div class="pe-cphost"></div>';
+  screenEl = root.firstElementChild; cpEl = root.lastElementChild;
   window.addEventListener('online', () => setOffline(false));
   window.addEventListener('offline', () => setOffline(true));
   document.addEventListener('visibilitychange', () => {       // backgrounding is not leaving; revalidate on return
@@ -828,22 +1103,29 @@ function onClick(e) {
   const a = el.dataset.act;
   const acts = {
     boot, start: startRun, reveal, skip, continue: continueOffer, 'ans-higher': () => answer('higher'), 'ans-lower': () => answer('lower'),
-    help: () => { S.ui.help = 'REOPEN'; go('G02.REOPEN'); },
-    'help-close': () => go(S.boot && S.boot.quota.playsLeft > 0 ? 'G01.READY' : 'G01.QUOTA_EXHAUSTED'),
-    'help-done': async () => { try { await api.onboarding(newKey()); } catch (x) { /* shown again next time at worst */ } S.boot.firstVisit = false; go(S.boot.quota.playsLeft > 0 ? 'G01.READY' : 'G01.QUOTA_EXHAUSTED'); },
+    guide: () => startTour('guide'),
+    'tour-next': () => { const t = S.ui.tour; if (t && !TOUR[t.i].interact && t.i < TOUR.length - 1) tourStep(t.i + 1); },
+    'tour-prev': () => { const t = S.ui.tour; if (t && t.i > 0) tourStep(t.i - 1); },
+    'tour-reveal': () => { const t = S.ui.tour; if (t && TOUR[t.i].id === 'reveal') tourStep(t.i + 1); },
+    'tour-ans-higher': () => tourAnswer('higher'), 'tour-ans-lower': () => tourAnswer('lower'),
+    'tour-close': () => { if (S.ui.tour && S.ui.tour.mode === 'guide') closeTour(); },
+    'tour-finish': finishTour,
+    'daily-claim': claimDaily, 'daily-check': checkDaily, 'daily-close': () => { S.ui.daily = null; render(); },
     resume: () => resume(S.boot.activeRun.runId),
     back: () => onBack(),
     'leave-no': () => { S.ui.leave = false; render(); },
     'leave-yes': leaveConfirmed,
-    'see-result': () => finished(S.run),
+    // a run still open (the offer's visible window ended after a rejected payment) is ended by its skip, never left hanging
+    'see-result': () => (S.run && S.run.state === 'OFFER_OPEN' && S.offer ? skip() : finished(S.run)),
     'show-result': showResult,
-    recheck: () => { if (S.op && S.op.operationId) api.operation(S.op.operationId).then(onOperation).catch(() => {}); else reconcileRun(); },
-    'to-start': boot, 'back-result': () => { S.ui.toast = null; go('G07.STANDARD'); },
+    recheck: () => { if (S.op && S.op.operationId) api.operation(S.op.operationId).then(o => onOperation(o, true)).catch(() => {}); else reconcileRun(); },
+    'recheck-answer': () => { if (S.q) readSettlement(S.q, S.gen); },
+    'to-start': boot,
     share: prepareShare, 'share-send': sendShare, 'share-close': () => { S.share = null; render(); },
-    products: showProducts, 'open-product': () => openProduct(el.dataset.link, el.dataset.id),
+    'history-retry': () => { const id = S.result && S.result.runId; if (id) { S.ui.historyState = 'loading'; S.products = null; render(); loadHistory(id, S.gen); } },
+    'open-product': () => openProduct(el.dataset.link),
     copy: copyCode,
     'exit-app': () => host.close(),
   };
   if (acts[a]) acts[a]();
 }
-

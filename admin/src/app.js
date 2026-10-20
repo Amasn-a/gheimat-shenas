@@ -277,8 +277,8 @@ function a01(w) {
   return configNote() + `<div class="qa-grid2"><section class="qa-card"><h2>سهمیه و زمان‌ها</h2>
     <div class="qa-field"><label for="f:plays_per_day">دست روزانه<small>مرز روز: ۰۰:۰۰ تهران · مقدار شروع: ۳ (R-33)</small></label><div>${input('plays_per_day', w.plays_per_day, { unit: 'دست' })}</div></div>
     <div class="qa-field"><label>پایان با بی‌فعالیتی بین سؤال‌ها<small>تصمیم مالک؛ در P0 ثابت</small></label><span class="qa-in"><input class="qa-input" readonly value="${faRaw(w.inactivity_ms / 60000)}" aria-label="پایان با بی‌فعالیتی"><span class="qa-unit">دقیقه</span></span></div>
-    <div class="qa-field"><label>زمان پاسخ<small>مرجع؛ در P0 قابل تغییر نیست (R-45)</small></label><span class="qa-in"><input class="qa-input" readonly value="${faRaw((w.input_ms - 500) / 1000)}" aria-label="زمان پاسخ"><span class="qa-unit">ثانیه + ۵۰۰ میلی‌ثانیه حاشیه</span></span></div>
-    <div class="qa-field"><label>فرصت پیشنهاد ادامه<small>مرجع؛ در P0 قابل تغییر نیست</small></label><span class="qa-in"><input class="qa-input" readonly value="${faRaw(w.offer_ms / 1000)}" aria-label="فرصت پیشنهاد ادامه"><span class="qa-unit">ثانیه</span></span></div>
+    <div class="qa-field"><label>زمان پاسخ<small>ثابت در P0 · پنجره نمایش و مهلت رسیدن درخواست به سرور (۲۰۲۶-۱۰-۲۰)</small></label><span class="qa-in"><input class="qa-input" readonly value="${faRaw(w.input_ms / 1000)} / ${faRaw(w.accept_ms / 1000)}" aria-label="زمان پاسخ"><span class="qa-unit">ثانیه</span></span></div>
+    <div class="qa-field"><label>فرصت پیشنهاد ادامه<small>ثابت در P0 · پنجره نمایش و مهلت رسیدن درخواست خرید</small></label><span class="qa-in"><input class="qa-input" readonly value="${faRaw(w.offer_ms / 1000)} / ${faRaw(w.offer_accept_ms / 1000)}" aria-label="فرصت پیشنهاد ادامه"><span class="qa-unit">ثانیه</span></span></div>
     <div class="qa-field"><label>سقف پاداش روزانه هر حساب<small>محاسبه‌شده: بالاترین چک‌پوینت × دست روزانه + استریک</small></label><span>${fa(S.ov.draft ? S.ov.draft_daily_cap : S.ov.active_daily_cap)} دیجی‌کوین</span></div>
     </section><section class="qa-card"><h2>قابلیت‌های P0</h2>
     ${row('continue_rule.enabled', w.continue_rule.enabled, 'ادامه با دیجی‌کوین', 'پیشنهاد ۱۰ ثانیه‌ای بعد از شکست')}
@@ -342,7 +342,7 @@ function a04(w) {
 // ------------------------------------------------------------------------------------------------ A05 operations and manual review
 const RUN_STATE = { READY: 'آماده', QUESTION_OPEN: 'سؤال باز', AWAITING_OFFER: 'در انتظار پیشنهاد', OFFER_OPEN: 'پیشنهاد باز', PAYMENT_PENDING: 'پرداخت در جریان', FINISHED: 'پایان‌یافته' };
 const OP_TYPE = { CHARGE: 'برداشت ادامه', REFUND: 'بازگشت وجه', CHECKPOINT_REWARD: 'پاداش چک‌پوینت', STREAK_REWARD: 'پاداش استریک' };
-const OP_STATUS = { PENDING: ['در انتظار', 'warn'], UNKNOWN: ['نامعلوم', 'warn'], SUCCEEDED: ['موفق', 'ok'], FAILED: ['ناموفق', 'bad'], HELD: ['نگه‌داشته (سقف)', 'warn'], NEEDS_REVIEW: ['نیاز به بررسی', 'bad'] };
+const OP_STATUS = { CLAIMABLE: ['منتظر دریافت بازیکن', 'warn'], PENDING: ['در انتظار', 'warn'], UNKNOWN: ['نامعلوم', 'warn'], SUCCEEDED: ['موفق', 'ok'], FAILED: ['ناموفق', 'bad'], HELD: ['نگه‌داشته (سقف)', 'warn'], NEEDS_REVIEW: ['نیاز به بررسی', 'bad'] };
 const OUTCOME = { no_issue: 'بدون مشکل', suspicious: 'مشکوک', needs_more_review: 'نیاز به بررسی بیشتر' };
 const MON = { open_runs: 'دست‌های باز', payments_pending: 'پرداخت‌های در جریان', operations_in_flight: 'عملیات در جریان', operations_unknown: 'عملیات نامعلوم',
   operations_needing_review: 'نیاز به بررسی', credits_held: 'پاداش نگه‌داشته', refunds: 'بازگشت وجه', codes_pending: 'کد در انتظار صدور' };
@@ -394,7 +394,7 @@ function opsResults() {
       <dt>وضعیت دسترسی</dt><dd>${p.blocked ? `${pill('مسدود از ' + when(p.blocked_at), 'bad')}<br><span class="qs-note">مسدود شده توسط ${esc(p.blocked_by)} · دلیل: ${esc(p.block_reason)}</span>` : pill('فعال', 'ok')}</dd></dl>
       <h2>نشانه‌ها <span class="qs-note">(فقط اطلاع؛ حساب علامت‌خورده عادی پرداخت می‌شود تا ویرایشگر مسدودش کند · R-60)</span></h2>
       <dl class="ad-kv"><dt>پاسخ‌ها</dt><dd>${fa(sg.answers)}</dd><dt>میانه زمان پاسخ</dt><dd>${sg.median_ms_from_t0 == null ? '—' : fa(Math.round(sg.median_ms_from_t0)) + ' میلی‌ثانیه'}</dd>
-      <dt>سهم پاسخ زیر ۶۰۰ میلی‌ثانیه</dt><dd>${sg.share_under_600ms == null ? '—' : fa(Math.round(sg.share_under_600ms * 100)) + '٪'}</dd><dt>دستگاه‌ها</dt><dd>${fa(sg.devices)}</dd>
+      <dt>سهم پاسخ زیر ۶۰۰ میلی‌ثانیه</dt><dd>${sg.share_under_600ms == null ? '—' : fa(Math.round(sg.share_under_600ms * 100)) + '٪'}</dd><dt>سهم پاسخ رسیده بعد از ۱۰ ثانیه</dt><dd>${sg.share_after_visible_window == null ? '—' : fa(Math.round(sg.share_after_visible_window * 100)) + '٪'}</dd><dt>دستگاه‌ها</dt><dd>${fa(sg.devices)}</dd>
       <dt>حساب‌های دیگر روی همین دستگاه‌ها</dt><dd>${fa(sg.accounts_on_same_devices)}</dd><dt>علامت ریسک</dt><dd>${sg.risk_flag ? pill('دارد', 'warn') + ' <span class="qs-note">' + esc(sg.risk_reasons || '') + '</span>' : pill('ندارد')}</dd></dl>
       ${canEdit() ? `<div class="qa-btns">${p.blocked ? btn('رفع مسدودیت', 'unblock', { kind: 'secondary' }) : btn('مسدود کردن بازیکن', 'block', { kind: 'secondary', attrs: 'style="color:var(--brand-red-strong)"' })}</div>` : ''}</section>`;
   }
