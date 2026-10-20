@@ -1,5 +1,3 @@
-Higher-or-lower price game for the Digikala Super App: Java backend module, player web app (Persian RTL, 375×812-first), and a standalone admin app.
-
 | Folder | What it is |
 |---|---|
 | `backend/` | Java 21 module `com.digikala.supercoin.gamification.games.priceexpert`, framework-free hexagonal core, PostgreSQL via JDBC, JDK HTTP edge for standalone runs, migrations, JUnit 5 integration tests on a real database |
