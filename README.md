@@ -1,11 +1,3 @@
-# قیمت‌شناس (Price Expert) — implementation
-
-<p align="center">
-  <a href="https://claude.ai/artifact/17BYdwrzzD1Y97h56XXjHV"><img alt="▶ Play the demo · بازی کن" src="docs/play-button.svg" width="300" height="60"></a>
-</p>
-
-> **Demo, not production.** The button opens the clickable prototype: sample products, a simulated server and a fake wallet, with reviewer controls beside the phone. Nothing in it touches real DigiCoin, accounts or Digikala services. If it doesn't open, ask the repo owner for access to the demo page.
-
 Higher-or-lower price game for the Digikala Super App: Java backend module, player web app (Persian RTL, 375×812-first), and a standalone admin app.
 
 | Folder | What it is |
