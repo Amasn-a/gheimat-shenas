@@ -137,6 +137,13 @@ public final class TestEnv implements AutoCloseable {
         }
         start.countDown();
         for (Thread t : ts) t.join(Duration.ofSeconds(30));
+        // a worker failure or a hung worker fails the test; tasks that expect an exception must catch it themselves
+        if (ts.stream().anyMatch(Thread::isAlive)) throw new AssertionError("parallel task still running after 30 s");
+        if (!errors.isEmpty()) {
+            AssertionError e = new AssertionError(errors.size() + " of " + n + " parallel tasks failed", errors.get(0));
+            errors.stream().skip(1).forEach(e::addSuppressed);
+            throw e;
+        }
     }
 
     @Override public void close() { ds.close(); }

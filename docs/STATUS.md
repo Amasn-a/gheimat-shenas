@@ -8,7 +8,7 @@
 | Player login (Super App token) | **Development stand-in** | `Bearer dev.<name>`. The real token-validation contract has not been supplied. Production start-up refuses the stand-in |
 | Admin sign-in | **Development stand-in** | Username and password with PBKDF2, server-side roles. Organisation SSO with MFA is not available here |
 | Campaign code source | **FAKE** | Codes look like `DEV-XXXX…` and are AES-encrypted at rest. The source and account-binding contract are still open. Production start-up refuses it |
-| Super App host bridge (back, close, haptics, share, deep link, theme) | **Adapter only, not wired** | `player/src/host.js` defines one adapter. Production `host-boot.js` is empty, so the build shows G11.AUTH_ERROR until the integration calls `configureHost`. No bridge names were invented |
+| Super App host bridge (back, close, haptics, share, deep link, theme) | **Adapter only, not wired** | `player/src/host.js` defines one adapter. `player/src/host-boot.js` is the production entry: the build bundles it with `host.js` and the game into one file, and it calls `configureHost({})` before loading the game. Until the integration fills that object with the real bridge, the build shows G11.AUTH_ERROR. No bridge names were invented |
 | Product catalog | **Real data, offline import** | The 1,000-product sample collected earlier from Digikala is imported. 992 rows imported (8 rejected for a zero price); 989 eligible. Live ingestion is not built: `api.digikala.com` is not reachable from this environment |
 | Product images | CDN URLs (`dkstatics-public.digikala.com`) | In development, local copies of the same images are served under `/media/` because the CDN is not reachable from the sandbox |
 | Analytics | Structured log lines (`LogEventSink`) | Event names are drafts for the analytics team. No vendor was added |
@@ -32,7 +32,10 @@
 - **Timing:**
   - `checkpoint_auto_continue_ms` 5,000 (F-01, proposed).
   - `offer_activation_ms` 180,000: how long an unactivated miss waits before the run ends. This reuses the inactivity value.
-  - `timeout_grace_ms` 1,000: an answer received ≤ 11,000 ms but still in flight can't lose to the timeout worker. Side effect: the timeout verdict shows about 12.3 s after release (measured). Lowering it to around 300–500 ms would shorten that gap.
+  - `timeout_grace_ms` 1,000: the timeout worker waits this long after the accept deadline. Since the answer receipt is now recorded before any run lock, the grace only has to cover ingress → one single-row write, so lowering it to around 300–500 ms (to shorten the ~12.3 s timeout verdict) is safer than before. Watch the `ON_TIME_ANSWER_TIMED_OUT` alert: it fires if an on-time answer still lost to a timeout, which means the grace is too short for the real latency.
+- **Payments after the offer closes:** a charge that was never sent is closed without touching the wallet. One that may have reached the provider is never sent again; it is reconciled by status query only (refunded once if it lands) and moves to NEEDS_REVIEW with an alert when the 72 h retry window ends. If DigiCoin guarantees that "not found" is final after its timeout (D06), it could be closed sooner.
+- **Idempotency lease:** 30 s for player requests, 15 min for admin writes (game-off finishes every active run). A retry after the lease takes the key over (recovery after a crash). Rows written by an older instance without a lease age from their creation time.
+- **A01 switches:** a run follows the switches of the configuration version it started with, like every other setting. Turning the streak switch off hides the streak card, row and share line and pays no streak reward; the server still counts streak days in the background (**unresolved:** should counting pause while the switch is off?).
 - **Motion durations** (`player/src/durations.js`): correct hold 1,300 ms, miss hold 1,700, promotion 540, shrink 340, checkpoint guard 1,200.
 - **Rate limits:** start 10 per minute per user, polling 4 per second per run. Idempotency retention 24 h. Coin call timeout 2 s. A reward is shown as "delayed" after 10 s pending.
 - **Risk signals** (A05, information only, R-60): share of answers under 600 ms; median under 0.9 s. These thresholds are proposals.
@@ -54,6 +57,21 @@
 7. **Live catalog ingestion:** depends on access to the Digikala product API from the deployment network.
 
 None of these block the playable path in development. Each is isolated behind a port or a configuration value.
+
+## Review of 716d889 — findings fixed
+
+| # | Finding | Fix | Covered by |
+|---|---|---|---|
+| 1 | A charge retried after the offer ended could debit the player (then refund) | A debit is sent only while the offer can still be granted. After that, a charge that may have been sent is reconciled by status query only: if it lands it is refunded once; if it never shows up it goes to NEEDS_REVIEW with an alert at the end of the retry window (never a silent FAILED) | `PaymentIT.retryAfterTheOfferEndedNeverSendsAFreshDebit_unresolvedGoesToReview`, `…anEarlierAttemptLandingAfterTheOfferEndedIsRefundedNotRepeated` |
+| 2 | An answer received on time (10,990 ms) but processed after the grace (12,001 ms) became a timeout | The receipt (choice + trusted arrival time) is written first, without waiting for run locks. Where the question would be timed out (any request or the worker), a recorded receipt is settled as the answer instead. Leave, block and replacement are unchanged: an answer not yet settled gives no correctness (R-59) | `RunLifecycleIT.t11b`, `t11c`, `t11d` |
+| 3 | The production build dropped `configureHost`, so `host-boot.js` could not configure the bundled game | `host-boot.js` is the bundle entry; the build fails if host boot, adapter or game are missing from the bundle | build audit + browser probe (theme, token and device id reach the game) |
+| 4 | After 3 answer attempts and 12 failed reads the client stayed in G03.ANSWER_PENDING | Reads continue with a capped backoff (≤ 10 s) under G10.RESUMING until the server settles the question; any authoritative run state clears the reconnecting indicator | browser probe: 14 failed reads → recovered to G03.CORRECT_FEEDBACK |
+| 5 | Share, products and haptics switches never reached the player; streak-off still advertised a reward | `run_config.features` / `config.features`; the player hides what is off; the server refuses products/share (`FEATURE_DISABLED`); bootstrap sends the effective streak reward | `RewardsIT.featureSwitchesReachThePlayerAndAreEnforced` + browser probe |
+| 6 | A crash between IN_PROGRESS and completion stranded the key for 24 h | Lease (30 s player, 15 min admin) with an owner token; a later retry takes over; a stale owner can neither complete nor release | `HttpIT.abandonedRequestKeyIsTakenOverAfterItsLease` |
+| 7 | The daily cap overflowed in 32-bit arithmetic (3 × 1,500,000,000 + 1 → 205,032,705) | Exact 64-bit computation; the validator rejects a cap that does not fit; admin views show the exact value | `DomainRulesTest.dailyCapNeverWraps` + admin API probe |
+| — | The parallel test helper swallowed worker exceptions | It now fails on any worker error or a worker still running after 30 s | all concurrency tests |
+| — | The backend build depended on machine-specific Debian paths | Maven Central by default plus the Gradle wrapper; `-PofflineRepo=…` for offline machines | `./gradlew build` (team) · offline run here |
+| — | `PaymentIT.t28` compared against the database's wall clock (fails from 20 Oct 2026); `RunLifecycleIT.t15` flaked on sparse catalog paths | Due time set on the test clock; t15 retries another path like the reward tests do | full suite |
 
 ## Defects found and fixed during this phase
 

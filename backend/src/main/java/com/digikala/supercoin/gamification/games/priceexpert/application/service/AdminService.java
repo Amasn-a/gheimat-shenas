@@ -27,9 +27,9 @@ public final class AdminService {
 
     public record FieldChange(String field, Object before, Object after) {}
     public record ConfigOverview(StoredConfig active, StoredConfig draft, List<StoredConfig> versions, Map<String, String> draftErrors,
-                                 List<FieldChange> draftChanges, int activeDailyCap, Integer draftDailyCap, Map<String, Object> bounds,
+                                 List<FieldChange> draftChanges, long activeDailyCap, Long draftDailyCap, Map<String, Object> bounds,
                                  boolean gameEnabled, String playerMessage, int settingsRevision) {}
-    public record DraftResult(int version, Map<String, String> errors, List<FieldChange> changes, int dailyCap) {}
+    public record DraftResult(int version, Map<String, String> errors, List<FieldChange> changes, long dailyCap) {}
     public record PublishResult(int activeVersion, Instant publishedAt, int dailyCap) {}
     public record AvailabilityResult(boolean enabled, String playerMessage, int runsClosed, int questionsStillOpen, int paymentsPending) {}
 
@@ -84,7 +84,7 @@ public final class AdminService {
             Map<String, String> errors = draft == null ? Map.of() : ConfigValidator.validate(draft.config(), ctx.bounds());
             List<FieldChange> changes = draft == null || active == null ? List.of() : diff(active.config(), draft.config());
             return new ConfigOverview(active, draft, ctx.configs().versions(20), errors, changes,
-                    active == null ? 0 : active.config().dailyAccountCap(), draft == null ? null : draft.config().dailyAccountCap(), bounds(),
+                    active == null ? 0 : active.config().dailyAccountCapExact(), draft == null ? null : draft.config().dailyAccountCapExact(), bounds(),
                     s.gameEnabled(), s.playerMessage(), s.revision());
         });
     }
@@ -108,7 +108,7 @@ public final class AdminService {
             }
             Map<String, String> errors = ConfigValidator.validate(cfg, ctx.bounds());
             ctx.audit().append(a.username(), a.role().name(), "config.draft", "config:" + version, before, json.apply(cfg), null, null, now);
-            return new DraftResult(version, errors, diff(active.config(), cfg), cfg.dailyAccountCap());
+            return new DraftResult(version, errors, diff(active.config(), cfg), cfg.dailyAccountCapExact());   // a draft may be invalid: never throw here
         });
     }
 

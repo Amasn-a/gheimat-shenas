@@ -1,5 +1,6 @@
 package com.digikala.supercoin.gamification.games.priceexpert.application.port.out;
 
+import com.digikala.supercoin.gamification.games.priceexpert.domain.model.Enums.Choice;
 import com.digikala.supercoin.gamification.games.priceexpert.domain.model.Offer;
 import com.digikala.supercoin.gamification.games.priceexpert.domain.model.Question;
 import com.digikala.supercoin.gamification.games.priceexpert.domain.model.Run;
@@ -28,6 +29,12 @@ public interface RunRepository {
     Optional<Question> findQuestion(String questionId);
     Optional<Question> lockQuestion(String questionId);
     void updateQuestion(Question q);
+    /**
+     * Records an answer receipt (choice + trusted arrival time) on an OPEN question of the caller's own run on its own
+     * device, only if it arrived by the accept deadline and no receipt exists yet (first receipt wins). Takes only the
+     * question row lock, so it never waits behind a run lock. Returns true when recorded.
+     */
+    boolean recordAnswerReceipt(String questionId, String userId, String deviceId, Choice choice, Instant receivedAt);
     Optional<Question> openQuestion(String runId);
     Optional<Question> latestSettledQuestion(String runId);
     List<Question> questionsOfRun(String runId);

@@ -11,14 +11,14 @@
 
 ## Quick start (development)
 
-Needs Java 21, Gradle 8, PostgreSQL 16. QA also needs Python 3 with Playwright and Chromium. The build needs Node 22.
+Needs Java 21 and PostgreSQL 16 (Gradle comes with the wrapper). QA also needs Python 3 with Playwright and Chromium. The build needs Node 22.
 
 ```bash
 # database (once)
 createuser pe -P            # password: pe
 createdb -O pe price_expert && createdb -O pe price_expert_test
 
-cd backend && gradle --offline installDist && cd ..
+cd backend && ./gradlew installDist && cd ..   # offline machine: add -PofflineRepo=/usr/share/maven-repo
 dev/start-bg.sh             # http://127.0.0.1:8080 — migrations, launch config and the catalog are applied on start
 # player (dev host + reviewer panel):   http://127.0.0.1:8080/play/dev.html?user=alice
 # admin (dev sign-in editor / editor-dev-password, viewer / viewer-dev-password):   http://127.0.0.1:8080/admin/
@@ -30,7 +30,7 @@ The development backend uses the **in-project fake DigiCoin provider** and a **d
 ## Checks
 
 ```bash
-cd backend && gradle --offline test                 # 57 tests on PostgreSQL (unit + integration + HTTP)
+cd backend && ./gradlew test                        # 65 tests on PostgreSQL (unit + integration + HTTP)
 python3 qa/flow.py /tmp/qa light                    # complete run in Chromium at 375×812 (also: dark)
 python3 qa/states.py /tmp/qa-states light           # 13 scenarios: timeout, no funds, payments, replacement, block, game-off, quota, campaign, offline, motion
 python3 qa/admin_flow.py /tmp/qa-admin light        # admin A01–A07, Editor and Viewer

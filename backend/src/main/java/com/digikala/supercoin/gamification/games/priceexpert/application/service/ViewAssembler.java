@@ -68,7 +68,14 @@ public final class ViewAssembler {
     public static RunConfigView runConfig(GameConfig cfg, int configVersion, int catalogVersion) {
         return new RunConfigView(configVersion, catalogVersion, cfg.inputMs(), cfg.acceptMs(), cfg.offerMs(), cfg.checkpointAutoContinueMs(),
                 cfg.enabledCheckpoints().stream().map(ViewAssembler::checkpoint).toList(),
-                new ContinueRuleView(cfg.continueRule().enabled(), cfg.continueRule().cost(), cfg.continueRule().cap()));
+                new ContinueRuleView(cfg.continueRule().enabled(), cfg.continueRule().cost(), cfg.continueRule().cap()),
+                features(cfg));
+    }
+
+    /** A configuration without switches (older rows) has everything on, as {@link GameConfig#effectiveStreakReward()} assumes. */
+    public static FeaturesView features(GameConfig cfg) {
+        GameConfig.Features f = cfg.features();
+        return f == null ? new FeaturesView(true, true, true, true) : new FeaturesView(f.streak(), f.share(), f.products(), f.haptics());
     }
 
     static boolean liveOffer(Offer o) { return o.state == OfferState.OPEN || o.state == OfferState.PAYMENT_PENDING; }

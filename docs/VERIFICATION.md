@@ -1,3 +1,15 @@
+# Verification log — 2026-10-20 (fixes for the review of 716d889)
+
+Same kind of environment as below (cloud Linux container, PostgreSQL 16, Java 21, headless Chromium at 375×812). Run and passed here unless stated otherwise.
+
+- **Backend:** 65 tests, 0 failures, three consecutive runs (`gradle -PofflineRepo=/usr/share/maven-repo test`): DomainRulesTest 8, RunLifecycleIT 20, SelectionIT 3, PaymentIT 14, RewardsIT 11, HttpIT 9. Two tests that failed on 716d889 for reasons unrelated to the review were fixed: `PaymentIT.t28` compared the test clock with the database's wall clock (it fails from 20 Oct 2026 on); `RunLifecycleIT.t15` flaked when a random path ran out of products.
+- **The new regression tests fail on 716d889 and pass now** (checked for findings 1 and 2 by running them against the old code: a debit was sent after the offer ended; the 10,990 ms answer was rejected as `QUESTION_EXPIRED`).
+- **Builds:** player and admin built, bundle audit passed; the build checks the player bundle contains host boot, host adapter and game, and that `index.html` loads only that entry.
+- **Browser probes** (scratch scripts, not committed): a host configured in `host-boot.js` reaches the bundled game (theme, token, device id); a lost answer response plus 14 failed run reads recovers to G03.CORRECT_FEEDBACK through G10.RESUMING; with all A01 switches off, G01 has no streak card and G07 has no share, products or streak row; an oversized cap draft returns a validation error and cannot be published.
+- **QA drivers:** `qa/flow.py` complete run (light and dark), `qa/states.py` all 13 scenarios, `qa/admin_flow.py` 21 screens — no page errors (with product images served locally).
+- **Independent review** of the diff by a second agent: no deadlock paths (every `applyDue` caller holds the player and run locks before the question lock; the receipt write holds only the question row); its four remarks were applied (late debit → review instead of FAILED, R-59 kept, longer admin lease and lease-less rows, reconnecting indicator cleared).
+- **Not done:** the Maven Central/wrapper build path (Maven Central and services.gradle.org are blocked here), real WebViews, sustained load.
+
 # Verification log — 2026-10-18
 
 **Environment:** cloud Linux container, 2 vCPU, 7 GB RAM. PostgreSQL 16 (local), Java 21, Chromium (Playwright, headless). The backend ran in development mode: fake DigiCoin, dev login, product images served locally.

@@ -32,6 +32,8 @@ public final class SettlementService {
 
         ctx.runs().openQuestion(run.runId).ifPresent(q -> {           // leave / block / replacement: no correctness (R-59)
             q.state = QuestionState.UNANSWERED;
+            q.choice = null;                                          // an answer receipt not yet settled does not count
+            q.receivedAt = null;
             q.settledAt = at;
             ctx.runs().updateQuestion(q);
         });

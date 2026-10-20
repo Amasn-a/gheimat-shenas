@@ -7,6 +7,7 @@ import com.digikala.supercoin.gamification.games.priceexpert.application.service
 import com.digikala.supercoin.gamification.games.priceexpert.application.service.AdminService.Admin;
 import com.digikala.supercoin.gamification.games.priceexpert.application.service.AdminService.Role;
 import com.digikala.supercoin.gamification.games.priceexpert.domain.exception.GameException;
+import com.digikala.supercoin.gamification.games.priceexpert.domain.service.Ids;
 import com.digikala.supercoin.gamification.games.priceexpert.domain.model.Campaign;
 import com.digikala.supercoin.gamification.games.priceexpert.domain.model.GameConfig;
 import com.digikala.supercoin.gamification.games.priceexpert.infrastructure.config.Json;
@@ -147,7 +148,8 @@ public final class AdminApi {
         if (key == null || key.length() < 8 || key.length() > 64) throw GameException.validation("Idempotency-Key header is required", Map.of());
         String bodyHash = hash(r.bodyText());
         String scope = "admin:" + a.username();
-        Optional<IdempotencyRepository.Stored> existing = tx.inTransaction(() -> idem.begin(scope, r.method(), r.path(), key, bodyHash, clock.instant()));
+        String owner = Ids.newId();                                         // this attempt; a takeover after a crash gets its own
+        Optional<IdempotencyRepository.Stored> existing = tx.inTransaction(() -> idem.begin(scope, r.method(), r.path(), key, bodyHash, owner, IdempotencyRepository.ADMIN_LEASE, clock.instant()));
         if (existing.isPresent()) {
             if (!existing.get().bodyHash().equals(bodyHash)) throw new GameException("IDEMPOTENCY_MISMATCH", 422, "the key was used with a different body", null);
             if ("IN_PROGRESS".equals(existing.get().status())) throw GameException.conflict("REQUEST_IN_PROGRESS", "still processing");
@@ -156,10 +158,10 @@ public final class AdminApi {
         try {
             Http.Response resp = body.apply(a);
             String json = Json.write(resp.body());
-            tx.run(() -> idem.complete(scope, r.method(), r.path(), key, resp.status(), json));
+            tx.run(() -> idem.complete(scope, r.method(), r.path(), key, owner, resp.status(), json));
             return new Http.Response(resp.status(), json, resp.headers());
         } catch (Exception | Error e) {
-            tx.run(() -> idem.forget(scope, r.method(), r.path(), key));
+            tx.run(() -> idem.forget(scope, r.method(), r.path(), key, owner));
             throw e;
         }
     }

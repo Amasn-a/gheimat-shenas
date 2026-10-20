@@ -1,5 +1,5 @@
-// Entry point. The host integration must call configureHost() before this module runs (production) — dev.html does it
-// with a clearly labelled development host. No reviewer controls, fake data or test hooks are part of this bundle.
+// Game start. Loaded by host-boot.js (production entry, bundled with it) or by dev/reviewer.js (development host), each
+// after configureHost(). No reviewer controls, fake data or test hooks are part of this bundle.
 import { init } from './game.js';
 import * as host from './host.js';
 

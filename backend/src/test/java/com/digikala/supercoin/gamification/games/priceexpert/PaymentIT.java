@@ -199,7 +199,9 @@ class PaymentIT {
             env.script(m.user(), "[{\"op\":\"charge\",\"outcome\":\"late_success\",\"late_ms\":" + lateMs + "}]");
             OperationView op = env.m.runs.continueOffer(m.c(), a.offer().offerId(), env.clock.instant());
             env.clock.set(a.offer().deadline().minusMillis(early));     // the confirmation becomes visible exactly now
-            env.sql("UPDATE pe_coin_operation SET next_attempt_at = now() - interval '1 hour' WHERE operation_id = ?", op.operationId());
+            // due on the test clock (the database's now() is wall-clock time and says nothing about the test clock)
+            env.sql("UPDATE pe_coin_operation SET next_attempt_at = ? WHERE operation_id = ?",
+                    java.time.OffsetDateTime.ofInstant(env.clock.instant().minusSeconds(3600), java.time.ZoneOffset.UTC), op.operationId());
             env.m.payments.process(op.operationId());                   // before any sweep
             String runState = env.scalar("SELECT state FROM pe_run WHERE run_id = ?", m.runId());
             if (early == 0) {
@@ -210,6 +212,57 @@ class PaymentIT {
                 assertEquals(0, env.count("SELECT count(*) FROM pe_coin_operation WHERE related_operation_id = ? AND type = 'REFUND'", op.operationId()));
             }
         }
+    }
+
+    /** Makes an operation due on the test clock (retry backoff and lease elapsed). */
+    static void due(String operationId) {
+        env.sql("UPDATE pe_coin_operation SET next_attempt_at = ? WHERE operation_id = ?",
+                java.time.OffsetDateTime.ofInstant(env.clock.instant().minusSeconds(1), java.time.ZoneOffset.UTC), operationId);
+    }
+
+    @Test void retryAfterTheOfferEndedNeverSendsAFreshDebit_unresolvedGoesToReview() {
+        // review of 716d889: attempt 1 timed out without reaching the provider; the retry runs after the offer deadline
+        Miss m = miss(0);
+        ActivationView a = activateAfterFeedback(m);
+        env.script(m.user(), "[{\"op\":\"charge\",\"outcome\":\"unknown_not_applied\"}]");
+        OperationView op = env.m.runs.continueOffer(m.c(), a.offer().offerId(), env.clock.instant());
+        String id = op.operationId();
+        assertEquals("UNKNOWN", env.scalar("SELECT status FROM pe_coin_operation WHERE operation_id = ?", id));
+
+        env.clock.set(a.offer().deadline().plusSeconds(5));
+        due(id);
+        env.m.payments.process(id);                                    // provider: not found; offer over → no debit
+        assertEquals(0, env.count("SELECT count(*) FROM pe_fake_wallet_tx WHERE provider_ref = ?", id), "no fresh debit after the offer ended");
+        assertEquals("UNKNOWN", env.scalar("SELECT status FROM pe_coin_operation WHERE operation_id = ?", id), "still confirming nothing landed");
+        assertEquals("FINISHED", env.scalar("SELECT state FROM pe_run WHERE run_id = ?", m.runId()));
+
+        assertEquals("expired_unconfirmed", env.m.runs.operation(m.c(), id).status(), "the player is told it is unconfirmed, not that it failed");
+        env.drainLedgerFully();                                          // two more minutes of status queries, never a send
+        assertEquals(0, env.count("SELECT count(*) FROM pe_fake_wallet_tx WHERE provider_ref = ?", id));
+        assertEquals("UNKNOWN", env.scalar("SELECT status FROM pe_coin_operation WHERE operation_id = ?", id));
+
+        // the provider never shows it: at the end of the retry window it goes to manual review with an alert, not to FAILED
+        env.clock.set(((java.sql.Timestamp) env.scalar("SELECT give_up_at FROM pe_coin_operation WHERE operation_id = ?", id)).toInstant().plusSeconds(1));
+        due(id);
+        env.m.payments.process(id);
+        assertEquals("NEEDS_REVIEW", env.scalar("SELECT status FROM pe_coin_operation WHERE operation_id = ?", id));
+        assertEquals(1, env.count("SELECT count(*) FROM pe_alert WHERE kind = 'COIN_OPERATION_NEEDS_REVIEW' AND details->>'operation_id' = ?", id));
+        assertEquals(0, env.count("SELECT count(*) FROM pe_coin_operation WHERE related_operation_id = ? AND type = 'REFUND'", id), "nothing to refund");
+        assertEquals(0, netCharge(m.user()));
+    }
+
+    @Test void anEarlierAttemptLandingAfterTheOfferEndedIsRefundedNotRepeated() {
+        Miss m = miss(0);
+        ActivationView a = activateAfterFeedback(m);
+        long lateMs = java.time.Duration.between(env.clock.instant(), a.offer().deadline()).toMillis() + 10_000;
+        env.script(m.user(), "[{\"op\":\"charge\",\"outcome\":\"late_success\",\"late_ms\":" + lateMs + "}]");   // debited, visible 10 s after the deadline
+        String id = env.m.runs.continueOffer(m.c(), a.offer().offerId(), env.clock.instant()).operationId();
+        env.clock.set(a.offer().deadline().plusSeconds(12));
+        due(id);
+        env.m.payments.process(id);
+        env.drainLedgerFully();
+        assertEquals(1, env.count("SELECT count(*) FROM pe_fake_wallet_tx WHERE user_id = ? AND kind = 'CHARGE'", "u_" + m.user()), "one debit, never a second");
+        assertEquals(0, netCharge(m.user()), "the late debit is refunded");
     }
 
     @Test void knownRejectionKeepsTheSameOfferActionable() {

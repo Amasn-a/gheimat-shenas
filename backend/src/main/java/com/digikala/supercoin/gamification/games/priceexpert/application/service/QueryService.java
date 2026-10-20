@@ -75,7 +75,7 @@ public final class QueryService {
             return new BootstrapView(access, !player.onboarded, new Quota(Math.max(0, cfg.playsPerDay() - playsUsed), cfg.playsPerDay(),
                     BusinessCalendar.nextMidnight(now)), player.record, best, new Streak(streak.days(), rewardToday, streak.lostNotice()),
                     balance.isPresent() ? balance.getAsLong() : null, active,
-                    ViewAssembler.runConfig(cfg, cfgVersion, ctx.activeCatalogVersion()), cfg.streakReward(), banner, now);
+                    ViewAssembler.runConfig(cfg, cfgVersion, ctx.activeCatalogVersion()), cfg.effectiveStreakReward(), banner, now);
         });
     }
 
@@ -149,6 +149,7 @@ public final class QueryService {
             Locked l = runs.lockForCommand(caller, runId, now);
             Run run = l.run();
             if (!run.isFinished()) throw runs.stateError("RUN_NOT_FINISHED", run, l.player(), caller);   // no open-question leak
+            requireFeature(ViewAssembler.features(ctx.config(run.configVersion)).products(), "products");
             List<Question> qs = ctx.runs().questionsOfRun(run.runId);
             List<ProductItem> items = new ArrayList<>();
             long firstRef = qs.isEmpty() ? run.referenceDkp : qs.get(0).referenceDkp;
@@ -167,6 +168,11 @@ public final class QueryService {
         });
     }
 
+    /** A01 switch off for the run's configuration version: the action does not exist for this run (draft error code). */
+    private static void requireFeature(boolean on, String feature) {
+        if (!on) throw new GameException("FEATURE_DISABLED", 409, feature + " is switched off", java.util.Map.of("feature", feature));
+    }
+
     private static ProductItem item(int pos, String role, CatalogProduct p, Long price, String result, boolean loss) {
         return new ProductItem(pos, role, String.valueOf(p.dkp()), String.valueOf(p.variantId()), p.displayTitle(), p.title(), p.imageUrl(),
                 price, result, loss, String.format(PRODUCT_LINK_TEMPLATE, p.dkp()));
@@ -177,6 +183,7 @@ public final class QueryService {
             Locked l = runs.lockForCommand(caller, runId, ctx.now());
             Run run = l.run();
             if (!run.isFinished()) throw runs.stateError("RUN_NOT_FINISHED", run, l.player(), caller);
+            requireFeature(ViewAssembler.features(ctx.config(run.configVersion)).share(), "share");
             CheckpointView cp = run.finishReason == FinishReason.blocked ? null : ViewAssembler.checkpoint(ctx.config(run.configVersion), run.highestCheckpointId);
             return new ShareView(run.score, cp == null ? null : cp.title(), cp == null ? null : cp.badgeAssetId(), l.player().streakDays,
                     "قیمت‌شناس", null);                                       // no host deep-link contract supplied: image only (R-56)

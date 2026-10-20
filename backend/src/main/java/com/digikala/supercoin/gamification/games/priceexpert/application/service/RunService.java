@@ -174,64 +174,51 @@ public final class RunService {
 
     // ------------------------------------------------------------------------------------------------ answer
 
+    /**
+     * The trusted arrival time decides the outcome (R-45), not the time the request gets its locks. The receipt is
+     * recorded first, in its own short transaction that never waits behind a run lock; the timeout path settles a
+     * recorded receipt as the answer instead of timing it out (DeadlineService). Then the run is locked and the
+     * settled outcome is returned, so a slow request, a sweep or a poll reaching the run first cannot cost an on-time answer.
+     */
     public AnswerView answer(Caller caller, String questionId, Choice choice, Instant receivedAt) {
         if (choice == null) throw GameException.validation("choice is required", Map.of("choice", "higher or lower"));
+        ctx.tx().run(() -> ctx.runs().recordAnswerReceipt(questionId, caller.userId(), caller.deviceId(), choice, receivedAt));
         Result<AnswerView> r = ctx.tx().inTransaction(() -> {
             Instant now = ctx.now();
             Question peek = ctx.runs().findQuestion(questionId).orElseThrow(GameException::notFound);
-            Locked l = lockForCommand(caller, peek.runId, now);
+            Locked l = lockForCommand(caller, peek.runId, now);             // past the grace: settles a recorded receipt
             Run run = l.run;
             Question q = ctx.runs().lockQuestion(questionId).orElseThrow();
             if (q.state == QuestionState.CORRECT || q.state == QuestionState.WRONG)   // first committed answer wins; replays get it
-                return Result.ok(answerView(q, run, l.player, caller, null, null));
-            if (q.state == QuestionState.TIMED_OUT)
+                return Result.ok(answerView(q, run, l.player, caller));
+            if (q.state == QuestionState.TIMED_OUT) {
+                if (!receivedAt.isAfter(q.acceptDeadline))                   // on time, but the receipt lost the race: grace too short
+                    ctx.ledger().alert("ON_TIME_ANSWER_TIMED_OUT", "late-settle:" + q.questionId,
+                            "{\"question_id\":\"" + q.questionId + "\",\"received_at\":\"" + receivedAt + "\"}", now);
                 return Result.error(stateError("QUESTION_EXPIRED", run, l.player, caller));
+            }
             if (run.isFinished() || q.state == QuestionState.UNANSWERED) return Result.error(finishedError(run, l.player, caller));
             requireDevice(run, caller, l.player);
-            if (receivedAt.isAfter(q.acceptDeadline))                        // inclusive cutoff: receivedAt <= acceptDeadline accepted (R-45)
-                return Result.error(stateError("QUESTION_EXPIRED", run, l.player, caller));
-
-            GameConfig cfg = ctx.config(run.configVersion);
-            boolean correct = q.isCorrect(choice);
-            q.choice = choice;
-            q.receivedAt = receivedAt;
-            q.settledAt = now;
-            q.state = correct ? QuestionState.CORRECT : QuestionState.WRONG;
-            ctx.runs().updateQuestion(q);
-            GameConfig.Checkpoint reached = null;
-            String noOffer = null;
-            if (correct) {
-                run.score++;
-                for (GameConfig.Checkpoint cp : cfg.enabledCheckpoints()) if (cp.requiredCorrect() == run.score) reached = cp;
-                if (reached != null) run.highestCheckpointId = reached.id();
-                run.referenceDkp = q.comparisonDkp;                          // promotion: the answered product becomes the reference
-                run.state = RunState.READY;
-                run.readySince = now;
-                run.nextDeadlineAt = now.plusMillis(cfg.inactivityMs());
-                ctx.runs().updateRun(run);
-                if (!ctx.settings().gameEnabled()) settlement.finish(run, l.player, FinishReason.game_off, now);
-            } else {
-                noOffer = deadlines.miss(run, l.player, q, cfg, receivedAt);
+            if (q.receivedAt == null) {                                      // no receipt yet (normally recorded above)
+                if (receivedAt.isAfter(q.acceptDeadline))                    // inclusive cutoff: receivedAt <= acceptDeadline accepted (R-45)
+                    return Result.error(stateError("QUESTION_EXPIRED", run, l.player, caller));
+                q.choice = choice;
+                q.receivedAt = receivedAt;
             }
-            Map<String, Object> e = new HashMap<>();
-            e.put("run_id", run.runId); e.put("question_id", q.questionId); e.put("result", correct ? "correct" : "wrong");
-            e.put("received_ms_after_t0", receivedAt.toEpochMilli() - q.releasedAt.toEpochMilli());
-            ctx.tx().afterCommit(() -> ctx.events().emit("answer_submitted", "answer:" + q.questionId, e));
-            if (reached != null) {
-                Map<String, Object> ce = Map.of("run_id", run.runId, "checkpoint_id", reached.id(), "config_version", run.configVersion);
-                ctx.tx().afterCommit(() -> ctx.events().emit("checkpoint_reached", "checkpoint:" + run.runId + ":" + ce.get("checkpoint_id"), ce));
-            }
-            return Result.ok(answerView(q, run, l.player, caller, reached, noOffer));
+            deadlines.settleAnswer(run, l.player, q, ctx.config(run.configVersion), now);   // the first recorded receipt wins
+            return Result.ok(answerView(q, run, l.player, caller));
         });
         return r.get();
     }
 
-    private AnswerView answerView(Question q, Run run, Player player, Caller caller, GameConfig.Checkpoint reached, String noOffer) {
+    private AnswerView answerView(Question q, Run run, Player player, Caller caller) {
         LastResult lr = ViewAssembler.lastResult(q);
         boolean continuePossible = run.state == RunState.AWAITING_OFFER && q.questionId.equals(run.missQuestionId);
-        String reason = noOffer != null ? noOffer : run.noOfferReason;
+        // the checkpoint this answer reached, derived from the stored question so that replays report it too
+        GameConfig.Checkpoint reached = q.state != QuestionState.CORRECT ? null : ctx.config(run.configVersion).enabledCheckpoints().stream()
+                .filter(cp -> cp.requiredCorrect() == q.scoreBefore + 1).findFirst().orElse(null);
         return new AnswerView(q.questionId, lr.result(), lr.choice(), lr.equalPrices(), lr.revealedPrice(), lr.direction(), run.score,
-                reached == null ? null : ViewAssembler.checkpoint(reached), continuePossible, reason, run.isFinished(),
+                reached == null ? null : ViewAssembler.checkpoint(reached), continuePossible, run.noOfferReason, run.isFinished(),
                 views.run(run, player.record, caller.deviceId()), ctx.now());
     }
 

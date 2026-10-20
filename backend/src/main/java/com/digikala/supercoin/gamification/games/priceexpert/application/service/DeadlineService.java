@@ -40,7 +40,11 @@ public final class DeadlineService {
             case QUESTION_OPEN -> {                                // a released question keeps its timing even when the game is off
                 Question q = ctx.runs().openQuestion(run.runId).orElseThrow();
                 if (!now.isBefore(q.acceptDeadline.plusMillis(cfg.timeoutGraceMs()))) {
-                    timeout(run, player, q, cfg);
+                    // Locked so this decision and a receipt being recorded are serialised. A receipt recorded on time is
+                    // the answer, not a timeout, even when its request has not reached the run yet or died (R-45).
+                    q = ctx.runs().lockQuestion(q.questionId).orElseThrow();
+                    if (q.receivedAt != null && q.choice != null) settleAnswer(run, player, q, cfg, now);
+                    else timeout(run, player, q, cfg);
                     return true;
                 }
             }
@@ -80,6 +84,39 @@ public final class DeadlineService {
             }
         }
         return ids.size();
+    }
+
+    /**
+     * Settles an OPEN question from its recorded receipt ({@code q.choice}, {@code q.receivedAt}); the caller holds the
+     * player, run and question locks. A miss is stamped at the receipt time, not at the time this runs.
+     */
+    void settleAnswer(Run run, Player player, Question q, GameConfig cfg, Instant now) {
+        boolean correct = q.isCorrect(q.choice);
+        q.settledAt = now;
+        q.state = correct ? QuestionState.CORRECT : QuestionState.WRONG;
+        ctx.runs().updateQuestion(q);
+        GameConfig.Checkpoint reached = null;
+        if (correct) {
+            run.score++;
+            for (GameConfig.Checkpoint cp : cfg.enabledCheckpoints()) if (cp.requiredCorrect() == run.score) reached = cp;
+            if (reached != null) run.highestCheckpointId = reached.id();
+            run.referenceDkp = q.comparisonDkp;                          // promotion: the answered product becomes the reference
+            run.state = RunState.READY;
+            run.readySince = now;
+            run.nextDeadlineAt = now.plusMillis(cfg.inactivityMs());
+            ctx.runs().updateRun(run);
+            if (!ctx.settings().gameEnabled()) settlement.finish(run, player, FinishReason.game_off, now);
+        } else {
+            miss(run, player, q, cfg, q.receivedAt);
+        }
+        Map<String, Object> e = new LinkedHashMap<>();
+        e.put("run_id", run.runId); e.put("question_id", q.questionId); e.put("result", correct ? "correct" : "wrong");
+        e.put("received_ms_after_t0", q.receivedAt.toEpochMilli() - q.releasedAt.toEpochMilli());
+        ctx.tx().afterCommit(() -> ctx.events().emit("answer_submitted", "answer:" + q.questionId, e));
+        if (reached != null) {
+            Map<String, Object> ce = Map.of("run_id", run.runId, "checkpoint_id", reached.id(), "config_version", run.configVersion);
+            ctx.tx().afterCommit(() -> ctx.events().emit("checkpoint_reached", "checkpoint:" + run.runId + ":" + ce.get("checkpoint_id"), ce));
+        }
     }
 
     /** Stamped at acceptDeadline (R-45) even when finalised later. */

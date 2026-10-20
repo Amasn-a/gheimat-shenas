@@ -31,6 +31,9 @@ const now = () => performance.now();
 function later(ms, fn) { const g = S.gen; return setTimeout(() => { if (g === S.gen) fn(); }, ms); }
 const cfg = () => (S.run && S.run.runConfig) || (S.boot && S.boot.config) || { checkpoints: [], continueRule: { enabled: false, cost: 0, cap: 0 }, inputMs: 10500, acceptMs: 11000, offerMs: 10000, checkpointAutoContinueMs: 5000 };
 const inRun = v => /^G03\.|^G04\.|^G05\.|^G06\./.test(v);
+/** A01 switch of the run's (or, before a run, the active) configuration; on when an older server sends none. */
+const feat = k => { const f = cfg().features; return !f || f[k] !== false; };
+const haptic = kind => { if (feat('haptics')) host.haptic(kind); };
 
 // ------------------------------------------------------------------------------------------------ rendering
 function model() {
@@ -298,6 +301,7 @@ export async function resume(runId) {
 
 /** Rebuilds the view from an authoritative run view (resume, reconnect, any 409 with state). Deadlines never restart. */
 function applyRun(run, context) {
+  S.ui.resuming = false;                                       // an authoritative state ends «در حال اتصال دوباره…»
   const prev = S.run;
   S.run = run; S.ref = run.reference;
   if (run.state === 'FINISHED') {
@@ -388,16 +392,18 @@ export async function answer(choice) {
       return handleError(e);
     }
   }
-  // No response after the retries: read the run until the server has settled this question (answer or timeout).
-  for (let i = 0; i < 12 && g === S.gen && S.q === q; i++) {
+  // No response after the retries: read the run until the server has settled this question (answer or timeout). The
+  // answer stays locked, so reading never stops while this question is current: every 700 ms for 12 reads, then
+  // G10.RESUMING with a backoff capped at 10 s (a reconnect, a return to the app or a server error still take over).
+  for (let i = 0; g === S.gen && S.q === q; i++) {
+    if (i === 12) { S.ui.resuming = true; render(); }
     try {
       const run = await api.run(S.run.runId);
       if (g !== S.gen || S.q !== q) return;
       if (run.state !== 'QUESTION_OPEN' || run.question.questionId !== q.questionId) return applyMissFromState(run, q);
     } catch (e) { if (!(e instanceof ApiError) || !e.network) return handleError(e); }
-    await new Promise(r => setTimeout(r, 700));
+    await new Promise(r => setTimeout(r, i < 12 ? 700 : Math.min(10000, 700 * 2 ** (i - 11))));
   }
-  if (g === S.gen && S.q === q) { S.ui.resuming = true; render(); }
 }
 
 /** An answer the server accepted but whose response was lost is shown from the run's lastResult, never as a loss. */
@@ -425,7 +431,7 @@ function onAnswer(ans, q) {
   S.ui.morph = DUR.verdictMs;                                  // hidden price tag → price plate, ask row → verdict
   S.ui.noOffer = ans.noOfferReason;
   if (ans.result === 'correct') {
-    host.haptic('correct');
+    haptic('correct');
     go('G03.CORRECT_FEEDBACK');
     const reached = ans.checkpointReached, fb = S.fb;
     later(DUR.correctHoldMs, () => {                           // readable verdict first, then the promotion
@@ -439,7 +445,7 @@ function onAnswer(ans, q) {
     });
     return;
   }
-  host.haptic('wrong');
+  haptic('wrong');
   go(ans.result === 'timeout' ? 'G03.TIMEOUT' : 'G03.WRONG_FEEDBACK');
   afterFeedback(S.run);
 }
@@ -576,7 +582,7 @@ let cpToken = 0, cpTimers = [];
 function openCp(c) {
   const token = ++cpToken;
   S.ui.cp = c; S.ui.cpDue = null; S.ui.cpAt = now(); S.ui.cpAutoStarted = false;
-  host.haptic('checkpoint');
+  haptic('checkpoint');
   render();
   cpTimers.push(later(DUR.cpGuardMs, () => { if (cpToken === token && S.ui.cp) { render(); const b = $('.v3-cp__go', root); if (b) b.focus({ preventScroll: true }); } }));
   cpTimers.push(later(DUR.cpEntranceMs, () => {                // the automatic hold is measured once the content is readable
@@ -687,7 +693,7 @@ async function refreshResult(runId, g) {   // pending rewards: every 2 s up to 1
 }
 
 export async function showProducts() {
-  const runId = S.result && S.result.runId; if (!runId) return;
+  const runId = S.result && S.result.runId; if (!runId || !feat('products')) return;
   go('G08.LOADING');
   try { S.products = S.products && S.products.runId === runId ? S.products : await api.products(runId); go('G08.LIST'); }
   catch (e) { go('G08.ERROR'); }
@@ -699,9 +705,9 @@ export async function openProduct(link, id) {
 }
 
 export async function prepareShare() {
-  if (S.ui.shareBusy || !S.result) return;
+  if (S.ui.shareBusy || !S.result || !feat('share')) return;
   S.ui.shareBusy = true; render();
-  try { S.share = await api.share(S.result.runId); }
+  try { S.share = await api.share(S.result.runId); if (!feat('streak')) S.share.streakDays = null; }
   catch (e) { S.share = null; toast('تصویر اشتراک ساخته نشد. دوباره امتحان کن.', true, 'G09.FAILED', true); }
   S.ui.shareBusy = false; render();
 }
@@ -727,7 +733,7 @@ async function drawShareImage(s) {
   x.font = '900 420px Vazirmatn, sans-serif'; x.fillText(fa(s.score), 540, 1060);
   x.font = '800 64px Vazirmatn, sans-serif'; x.fillText('پاسخ درست در یک دست', 540, 1180);
   if (s.checkpointTitle) { x.fillStyle = '#FFC633'; x.font = '900 72px Vazirmatn, sans-serif'; x.fillText(s.checkpointTitle, 540, 1400); x.fillStyle = '#FFFFFF'; }
-  x.font = '700 52px Vazirmatn, sans-serif'; x.fillText(`استریک ${fa(s.streakDays)} روزه. تو چندتا می‌زنی؟`, 540, 1700);
+  x.font = '700 52px Vazirmatn, sans-serif'; x.fillText(s.streakDays == null ? 'تو چندتا می‌زنی؟' : `استریک ${fa(s.streakDays)} روزه. تو چندتا می‌زنی؟`, 540, 1700);
   return new Promise(res => c.toBlob(res, 'image/png'));
 }
 

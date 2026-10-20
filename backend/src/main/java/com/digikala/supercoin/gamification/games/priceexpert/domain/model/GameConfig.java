@@ -62,8 +62,16 @@ public record GameConfig(
         return enabledCheckpoints().stream().mapToInt(Checkpoint::reward).max().orElse(0);
     }
 
-    /** R-47: plays per day × highest checkpoint reward + daily streak reward (launch: 3 × 40 + 1 = 121). */
+    /**
+     * R-47: plays per day × highest checkpoint reward + daily streak reward (launch: 3 × 40 + 1 = 121). Exact: a value
+     * that does not fit throws instead of wrapping; {@code ConfigValidator} rejects such a configuration before publish.
+     */
     public int dailyAccountCap() {
-        return playsPerDay * highestCheckpointReward() + effectiveStreakReward();
+        return Math.toIntExact(dailyAccountCapExact());
+    }
+
+    /** The cap in 64-bit arithmetic (int × int + int cannot overflow a long), for validation and admin display. */
+    public long dailyAccountCapExact() {
+        return (long) playsPerDay * highestCheckpointReward() + effectiveStreakReward();
     }
 }

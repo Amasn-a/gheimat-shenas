@@ -101,6 +101,14 @@ public final class JdbcRunRepository implements RunRepository {
                 q.state, nz(q.choice), nz(q.receivedAt), nz(q.settledAt), q.questionId);
     }
 
+    @Override public boolean recordAnswerReceipt(String questionId, String userId, String deviceId, Choice choice, Instant receivedAt) {
+        return update("""
+            UPDATE pe_question q SET choice = ?, received_at = ?
+            WHERE q.question_id = ? AND q.state = 'OPEN' AND q.received_at IS NULL AND ? <= q.accept_deadline
+              AND EXISTS (SELECT 1 FROM pe_run r WHERE r.run_id = q.run_id AND r.user_id = ? AND r.device_id = ? AND r.state = 'QUESTION_OPEN')""",
+                choice, receivedAt, questionId, receivedAt, userId, deviceId) == 1;
+    }
+
     @Override public Optional<Question> openQuestion(String runId) {
         return one("SELECT * FROM pe_question WHERE run_id = ? AND state = 'OPEN'", JdbcRunRepository::question, runId);
     }

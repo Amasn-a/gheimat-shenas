@@ -159,6 +159,7 @@ const HL = (h, p) => `<div class="v3-hl"><h1>${h}</h1><p>${p}</p></div>`;
 const HL_DEF = () => HL('گرون‌تره یا ارزون‌تر؟', 'قیمت دو کالا رو مقایسه کن، درست جواب بده و به چک‌پوینت‌ها برس.');
 const HELP = `<button class="v3-link" data-act="help">${ICO('help')}راهنمای بازی</button>`;
 function streakCard(b) {
+  if (b.config && b.config.features && b.config.features.streak === false) return '';   // A01 streak switch off
   const s = b.streak, r = b.streakReward;
   if (s.lostNotice) return `<div class="v3-streak v3-streak--lost" role="status"><span class="v3-streak__f" aria-hidden="true">${I.flame}</span><div><b>استریکت قطع شد</b><span>امروز یه دست کامل بازی کن تا دوباره شروع بشه.</span></div>${r ? pillCoin(r) : ''}</div>`;
   const today = s.rewardToday !== 'none';
@@ -276,9 +277,10 @@ export function vResult(m) {
   const first = m.config.checkpoints[0];
   const ach = R.checkpoint ? `<div class="v3-ach"><span class="v3-medal"><span>${fa(R.checkpoint.requiredCorrect)}</span></span><div><span>آخرین عنوان</span><b>${esc(R.checkpoint.title)}</b></div></div>`
     : `<div class="v3-ach v3-ach--none"><span class="v3-medal v3-medal--none"><span>—</span></span><div><span>هنوز چک‌پوینتی نگرفتی</span><b>اولی با ${fa(first ? first.requiredCorrect : 3)} پاسخ درست</b></div></div>`;
+  const F = m.config.features || {}, P = F.products !== false, SH = F.share !== false;   // A01 switches of this run's version
   const cr = R.checkpointReward, sr = R.streak && R.streak.reward;
   const rows = [['پاداش بالاترین چک‌پوینت', R.checkpoint && cr && cr.amount > 0 ? CB(cr.amount) + pillFor(cr.status) : '<b class="is-none">—</b>'],
-    sr ? [`جایزه استریک ${fa(R.streak.days)} روزه`, CB(sr.amount) + pillFor(sr.status)] : ['استریک', `<b>${fa(R.streak ? R.streak.days : 0)} روز</b>`]];
+    sr ? [`جایزه استریک ${fa(R.streak.days)} روزه`, CB(sr.amount) + pillFor(sr.status)] : F.streak === false ? null : ['استریک', `<b>${fa(R.streak ? R.streak.days : 0)} روز</b>`]].filter(Boolean);
   let st = '';
   const delayed = [cr, sr].some(x => x && x.status === 'delayed');
   if (delayed) st = status('warn', 'واریز با تأخیر انجام می‌شه.', 'clock');   // R-24: on the result only
@@ -288,12 +290,13 @@ export function vResult(m) {
   const nx = R.nextGoal;
   if (!st && nx && nx.remaining <= 2 && R.reason !== 'no_products') st = status('', `فقط ${fa(nx.remaining)} پاسخ تا ${esc(nx.title)} (${fa(nx.reward)} دیجی‌کوین) کم داشتی.`, 'info');   // CP-25
   const quota = R.quota.playsLeft === 0;
-  const cta = quota ? GOLD(`${ICO('list')}کالاهای این دست`, ' data-act="products"') : GOLD('دوباره بازی کن', ' data-act="start"');
+  const cta = !quota ? GOLD('دوباره بازی کن', ' data-act="start"') : P ? GOLD(`${ICO('list')}کالاهای این دست`, ' data-act="products"') : GOLD('بازگشت به شروع', ' data-act="to-start"');
   const plays = quota ? `دست‌های جدید تا <b dir="ltr" data-countdown>${untilInstant(m.untilReset)}</b> دیگه` : `<b>${fa(R.quota.playsLeft)} دست</b> دیگه برای امروز داری`;
   const sb = m.shareBusy ? `<button class="v3-btn v3-btn--soft" disabled aria-disabled="true" aria-busy="true"><span class="v3-spin" aria-hidden="true"></span>اشتراک‌گذاری</button>`
     : `<button class="v3-btn v3-btn--soft" data-act="share">${ICO('share')}اشتراک‌گذاری</button>`;
-  const sec = quota ? `<div class="v3-row2">${sb}<button class="v3-btn v3-btn--soft" data-act="to-start">${ICO('back')}بازگشت به شروع</button></div>`
-    : `<div class="v3-row2">${sb}<button class="v3-btn v3-btn--soft" data-act="products">${ICO('list')}کالاهای این دست</button></div>`;
+  const second = [SH ? sb : '', !P ? '' : quota ? `<button class="v3-btn v3-btn--soft" data-act="to-start">${ICO('back')}بازگشت به شروع</button>`
+    : `<button class="v3-btn v3-btn--soft" data-act="products">${ICO('list')}کالاهای این دست</button>`].filter(Boolean);
+  const sec = second.length === 2 ? `<div class="v3-row2">${second.join('')}</div>` : second.length ? second[0].replace('v3-btn v3-btn--soft', 'v3-btn v3-btn--soft v3-btn--block') : '';
   const tst = m.toast && m.toast.page ? toastHTML(m.toast) : '';
   const out = R.campaignCode && R.campaignCode.status === 'sold_out' ? status('', 'کدهای تخفیف این کمپین تموم شد؛ پاداش دیجی‌کوینت سر جاشه.', 'info') : '';   // CP-31
   const code = R.campaignCode && R.campaignCode.status !== 'sold_out' ? codeCard(R.campaignCode, R.codeState) : '';
@@ -322,7 +325,7 @@ export function shareAsset(s) {   // no player name (R-12)
     `<div><div class="v3-share__brand">${esc(s.gameName)}</div><div class="v3-share__sub">بازی گرون‌تره یا ارزون‌تر</div></div>` +
     `<div><div class="v3-share__n">${fa(s.score)}</div><div class="v3-share__l">پاسخ درست در یک دست</div></div>` +
     (s.checkpointTitle ? `<div class="v3-share__card"><span class="v3-medal"><span>✓</span></span><div><span>آخرین عنوان</span><b>${esc(s.checkpointTitle)}</b></div></div>` : '') +
-    `<div class="v3-share__foot">استریک ${fa(s.streakDays)} روزه. تو چندتا می‌زنی؟</div></div>`;
+    `<div class="v3-share__foot">${s.streakDays == null ? '' : `استریک ${fa(s.streakDays)} روزه. `}تو چندتا می‌زنی؟</div></div>`;
 }
 
 // ---------------------------------------------------------------- G10 connection, G11 unavailable

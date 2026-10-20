@@ -45,12 +45,6 @@ public final class PaymentService {
         Optional<CoinOperation> claimed = claim(operationId);
         if (claimed.isEmpty()) return;
         CoinOperation op = claimed.get();
-
-        if (op.type == OperationType.CHARGE && op.attempts == 1 && op.status == OperationStatus.PENDING && !chargeStillWanted(op)) {
-            // Never sent (this is the first attempt) and the offer is over: abandon without touching the wallet.
-            applyChargeOutcome(op.operationId, new CoinGateway.Result(Outcome.FAILED, null, "not sent: offer ended before execution"));
-            return;
-        }
         CoinGateway.Result r;
         try {
             r = execute(op);
@@ -63,9 +57,22 @@ public final class PaymentService {
 
     private CoinGateway.Result execute(CoinOperation op) {
         // A previous attempt may have reached the provider: ask before sending again (UNKNOWN or re-claimed PENDING).
-        if (op.attempts > 1 || op.status == OperationStatus.UNKNOWN) {
+        boolean mayHaveBeenSent = op.attempts > 1 || op.status == OperationStatus.UNKNOWN;
+        if (mayHaveBeenSent) {
             CoinGateway.Result q = ctx.coin().query(op.operationId);
-            if (q.outcome() != Outcome.NOT_FOUND) return q;
+            if (q.outcome() != Outcome.NOT_FOUND) return q;              // reached the provider: applied (refunded if late) or rejected
+        }
+        if (op.type == OperationType.CHARGE) {
+            // Nothing is known at the provider. A debit is sent (first time or again) only while the offer can still be
+            // granted; once the offer is over no fresh debit is ever sent (R-43). A charge that was never sent is closed.
+            // One that may have been sent is reconciled by status query only: if it lands it is refunded once; if it never
+            // shows up, the retry window (giveUpAt) moves it to NEEDS_REVIEW with an alert, never to a silent FAILED,
+            // because a provider "not found" is not yet known to be final (DigiCoin contract, D06).
+            Offer offer = ctx.tx().inTransaction(() -> ctx.runs().findOffer(op.offerId)).orElse(null);
+            if (offer == null || offer.state != OfferState.PAYMENT_PENDING || !offer.openAt(ctx.now())) {
+                return mayHaveBeenSent ? new CoinGateway.Result(Outcome.UNKNOWN, null, "offer over: reconciling an earlier attempt by status query")
+                        : new CoinGateway.Result(Outcome.FAILED, null, "not sent: offer ended before execution");
+            }
         }
         return switch (op.type) {
             case CHARGE -> ctx.coin().charge(op.userId, op.amount, op.operationId);
@@ -96,11 +103,6 @@ public final class PaymentService {
             ctx.ledger().updateOperation(op);
             return Optional.of(op);
         });
-    }
-
-    private boolean chargeStillWanted(CoinOperation op) {
-        return ctx.tx().inTransaction(() -> ctx.runs().findOffer(op.offerId)
-                .map(o -> o.state == OfferState.PAYMENT_PENDING && o.openAt(ctx.now())).orElse(false));
     }
 
     /**

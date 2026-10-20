@@ -1,6 +1,7 @@
-// Offline build: dependencies come from the Debian maven repository on this machine
-// (Maven Central is not reachable from the build environment). In supercoin these lines are
-// replaced by the module's own Spring Boot dependencies; the game code itself has no framework imports.
+// Team build: `./gradlew build` resolves from Maven Central (or the company mirror configured in Gradle settings).
+// In supercoin these dependencies are replaced by the module's own Spring Boot ones; the game code has no framework imports.
+// Offline machines without Maven Central can point at a local Maven-layout repository instead, for example the
+// Debian/Ubuntu one installed by the lib*-java packages: ./gradlew build -PofflineRepo=/usr/share/maven-repo
 plugins {
     id 'java'
     id 'application'
@@ -11,8 +12,10 @@ version = '0.1.0'
 
 java { toolchain { languageVersion = JavaLanguageVersion.of(21) } }
 
+def offlineRepo = findProperty('offlineRepo')
+
 repositories {
-    maven { url = uri('file:///usr/share/maven-repo') }
+    if (offlineRepo) maven { url = uri(offlineRepo) } else mavenCentral()
 }
 
 dependencies {
@@ -23,7 +26,14 @@ dependencies {
     implementation 'com.fasterxml.jackson.core:jackson-annotations:2.14.0'
     runtimeOnly 'org.slf4j:slf4j-jdk14:1.7.32'
     implementation 'org.slf4j:slf4j-api:1.7.32'
-    testImplementation files('/usr/share/java/junit-platform-console-standalone-1.9.1.jar')
+    if (offlineRepo) {
+        // the Debian/Ubuntu packaging pairs Jupiter 5.10 with Platform 1.9; its standalone jar is the consistent set
+        testImplementation 'org.junit.platform:junit-platform-console-standalone:1.9.1'
+    } else {
+        testImplementation platform('org.junit:junit-bom:5.10.1')
+        testImplementation 'org.junit.jupiter:junit-jupiter'
+        testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    }
 }
 
 application {

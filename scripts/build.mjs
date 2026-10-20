@@ -21,7 +21,7 @@ async function bundle(app, entries, css) {
   const cssName = `app-${createHash('sha256').update(cssText).digest('hex').slice(0, 8)}.css`;
   writeFileSync(join(out, cssName), cssText);
   cpSync(join(ROOT, app, 'fonts'), join(out, 'fonts'), { recursive: true });
-  return { out, js: Object.keys(r.metafile.outputs).map(p => p.split('/').pop()), cssName };
+  return { out, js: Object.keys(r.metafile.outputs).map(p => p.split('/').pop()), cssName, meta: r.metafile };
 }
 
 function audit() {
@@ -40,14 +40,17 @@ function audit() {
 }
 
 if (!checkOnly) {
-  // player: host-boot.js stays a separate, integration-owned file loaded first (configureHost with the real bridge)
-  const p = await bundle('player', [join(ROOT, 'player/src/main.js')], ['./styles/fonts.css', './styles/tokens.css', './styles/ds.css', './styles/app.css']);
-  cpSync(join(ROOT, 'player/src/host-boot.js'), join(p.out, 'host-boot.js'));
+  // player: the integration-owned host-boot.js is the entry, so its configureHost() call and the game share one host.js
+  const p = await bundle('player', [join(ROOT, 'player/src/host-boot.js')], ['./styles/fonts.css', './styles/tokens.css', './styles/ds.css', './styles/app.css']);
+  const entry = p.js.find(f => f.startsWith('host-boot-') && f.endsWith('.js'));
+  const inputs = Object.values(p.meta.outputs).flatMap(o => Object.keys(o.inputs));
+  const missing = ['player/src/host-boot.js', 'player/src/host.js', 'player/src/main.js'].filter(f => !inputs.some(i => i.endsWith(f)));
+  if (!entry || missing.length) { console.error('player bundle must contain the host boot, the host adapter and the game; missing: ' + missing.join(', ')); process.exit(1); }
   const pIndex = readFileSync(join(ROOT, 'player/index.html'), 'utf8')
     .replace(/\s*<link rel="stylesheet" href="styles\/[^"]+">/g, '')
     .replace('</head>', `<link rel="stylesheet" href="${p.cssName}">\n</head>`)
-    .replace('src="src/host-boot.js"', 'src="host-boot.js"')
-    .replace('src="src/main.js"', `src="${p.js.find(f => f.startsWith('main-'))}"`);
+    .replace('src="src/host-boot.js"', `src="${entry}"`);
+  if ((pIndex.match(/<script\b/g) || []).length !== 1 || !pIndex.includes(`src="${entry}"`)) { console.error('player index.html must load exactly the bundled entry'); process.exit(1); }
   writeFileSync(join(p.out, 'index.html'), pIndex);
 
   const a = await bundle('admin', [join(ROOT, 'admin/src/app.js')], ['./styles/fonts.css', './styles/kit.css', './styles/admin.css']);

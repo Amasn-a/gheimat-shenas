@@ -113,14 +113,17 @@ public final class PlayerApi {
     /**
      * Handoff idempotency contract: scope (user, method, path, key); same key + same body → stored response; same key +
      * different body → 422 IDEMPOTENCY_MISMATCH; a key from another user is simply a different scope. Only successful
-     * responses are stored; errors are re-evaluated on retry (the domain's own uniqueness rules still apply).
+     * responses are stored; errors are re-evaluated on retry (the domain's own uniqueness rules still apply). A retry while
+     * the first attempt runs gets REQUEST_IN_PROGRESS; once that attempt's 30 s lease has expired (its process died) the retry
+     * takes the key over and executes, which the domain rules make safe (one answer, one operation per offer, …).
      */
     Http.Response idempotent(Http.Request r, Body body) throws Exception {
         Caller c = caller(r);
         String key = r.header("Idempotency-Key");
         if (key == null || !UUID.matcher(key).matches()) throw GameException.validation("Idempotency-Key header (UUID) is required", Map.of());
         String hash = sha256(r.body());
-        Optional<IdempotencyRepository.Stored> existing = tx.inTransaction(() -> idem.begin(c.userId(), r.method(), r.path(), key, hash, clock.instant()));
+        String owner = Ids.newId();                                         // this attempt; a takeover after a crash gets its own
+        Optional<IdempotencyRepository.Stored> existing = tx.inTransaction(() -> idem.begin(c.userId(), r.method(), r.path(), key, hash, owner, IdempotencyRepository.PLAYER_LEASE, clock.instant()));
         if (existing.isPresent()) {
             IdempotencyRepository.Stored s = existing.get();
             if (!s.bodyHash().equals(hash)) throw new GameException("IDEMPOTENCY_MISMATCH", 422, "the key was used with a different body", null);
@@ -130,10 +133,10 @@ public final class PlayerApi {
         try {
             Http.Response resp = body.apply(c);
             String json = Json.write(resp.body());
-            tx.run(() -> idem.complete(c.userId(), r.method(), r.path(), key, resp.status(), json));
+            tx.run(() -> idem.complete(c.userId(), r.method(), r.path(), key, owner, resp.status(), json));
             return new Http.Response(resp.status(), json, resp.headers());
         } catch (Exception | Error e) {
-            tx.run(() -> idem.forget(c.userId(), r.method(), r.path(), key));
+            tx.run(() -> idem.forget(c.userId(), r.method(), r.path(), key, owner));
             throw e;
         }
     }

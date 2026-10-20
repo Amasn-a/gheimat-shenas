@@ -96,6 +96,9 @@ public final class ConfigValidator {
             }
         }
         if (c.features() == null) e.put("features", "missing");
+        // The derived daily cap is stored as INTEGER and compared against credits: it must fit, never wrap (R-47).
+        if (c.checkpoints() != null && c.dailyAccountCapExact() > Integer.MAX_VALUE)
+            e.put("daily_account_cap", "plays per day × highest checkpoint reward + streak reward must be at most " + Integer.MAX_VALUE);
         if (c.payoutAlertThreshold() != null && c.payoutAlertThreshold() <= 0) e.put("payout_alert_threshold", "must be positive or unset");
         if (c.priceChangeThresholdBp() != null && c.priceChangeThresholdBp() <= 0) e.put("price_change_threshold_bp", "must be positive or unset");
         return e;

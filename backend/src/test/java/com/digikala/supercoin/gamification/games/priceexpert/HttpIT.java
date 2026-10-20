@@ -357,4 +357,27 @@ class HttpIT {
         assertTrue(m.ctx.coin().balance("u_any").isEmpty(), "balance is unknown, not zero and not fake");
         assertEquals("UNKNOWN", m.ctx.coin().credit("u_any", 5, "k-" + UUID.randomUUID()).outcome().name());
     }
+
+    // ------------------------------------------------------------------------------------------------ idempotency lease
+
+    @Test void abandonedRequestKeyIsTakenOverAfterItsLease() throws Exception {
+        // review of 716d889: a process that died after recording IN_PROGRESS stranded the key until the 24 h purge
+        Player p = player();
+        String key = UUID.randomUUID().toString(), path = P + "/player/onboarding";
+        String hash = HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest("{}".getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        var idem = env.m.ctx.idempotency();
+        assertTrue(env.m.ctx.tx().inTransaction(() -> idem.begin(p.userId(), "POST", path, key, hash, "dead-attempt", com.digikala.supercoin.gamification.games.priceexpert.application.port.out.IdempotencyRepository.PLAYER_LEASE, env.clock.instant())).isEmpty());
+        assertEquals("REQUEST_IN_PROGRESS", p.post("/player/onboarding", "{}", key).code(), "protected while the lease runs");
+        env.clock.advance(com.digikala.supercoin.gamification.games.priceexpert.application.port.out.IdempotencyRepository.PLAYER_LEASE.toMillis() + 1);
+        Res r = p.post("/player/onboarding", "{}", key);
+        assertEquals(200, r.status(), r.raw());
+        assertNull(r.h().get("Idempotent-Replay"), "the retry executed");
+        // the dead attempt can neither overwrite nor release the key any more
+        env.m.ctx.tx().run(() -> idem.complete(p.userId(), "POST", path, key, "dead-attempt", 500, "{}"));
+        env.m.ctx.tx().run(() -> idem.forget(p.userId(), "POST", path, key, "dead-attempt"));
+        Res replay = p.post("/player/onboarding", "{}", key);
+        assertEquals(200, replay.status(), replay.raw());
+        assertEquals("true", replay.h().get("Idempotent-Replay"));
+        assertEquals(422, p.post("/player/onboarding", "{\"x\":1}", key).status(), "a different body is still a mismatch");
+    }
 }

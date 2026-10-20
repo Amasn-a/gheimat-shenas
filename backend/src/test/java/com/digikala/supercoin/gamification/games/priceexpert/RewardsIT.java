@@ -339,4 +339,41 @@ class RewardsIT {
             assertEquals(5, sold.checkpointReward().amount(), "sold out keeps the DigiCoin reward");
         } finally { env.m.admin.endCampaign(EDITOR, camp.campaignId(), "test end"); }
     }
+
+    // ------------------------------------------------------------------------------------------------ A01 switches
+
+    @Test void featureSwitchesReachThePlayerAndAreEnforced() {
+        // review of 716d889: share / products / haptics switches never reached the player; streak-off still advertised a reward
+        int active = env.m.ctx.tx().inTransaction(env.m.ctx::activeConfigVersion);
+        GameConfig b = LaunchConfig.value();
+        GameConfig off = new GameConfig(b.playsPerDay(), b.inputMs(), b.acceptMs(), b.offerMs(), b.inactivityMs(), b.offerActivationMs(), b.timeoutGraceMs(),
+                b.checkpointAutoContinueMs(), b.checkpoints(), b.continueRule(), b.streakReward(), b.bands(), b.payoutAlertThreshold(),
+                b.priceChangeThresholdBp(), new GameConfig.Features(false, false, false, false));
+        var d = env.m.admin.saveDraft(EDITOR, off);
+        env.m.admin.publish(EDITOR, d.version(), active, "switches off");
+        Caller c = env.caller(user());
+        String run;
+        try {
+            BootstrapView boot = env.m.queries.bootstrap(c);
+            assertEquals(new FeaturesView(false, false, false, false), boot.config().features());
+            assertEquals(0, boot.streakReward(), "no streak reward is advertised while the streak switch is off");
+            run = env.m.runs.start(c).run().runId();
+            assertFalse(env.m.queries.run(c, run).runConfig().features().haptics());
+            env.m.runs.leave(c, run);
+            assertEquals("FEATURE_DISABLED", assertThrows(GameException.class, () -> env.m.queries.products(c, run)).code());
+            assertEquals("FEATURE_DISABLED", assertThrows(GameException.class, () -> env.m.queries.share(c, run)).code());
+        } finally {
+            var restore = env.m.admin.saveDraft(EDITOR, LaunchConfig.value());
+            env.m.admin.publish(EDITOR, restore.version(), d.version(), "restore");
+        }
+        // the finished run keeps its pinned version; a new run under the restored version has everything
+        assertEquals("FEATURE_DISABLED", assertThrows(GameException.class, () -> env.m.queries.share(c, run)).code());
+        Caller c2 = env.caller(user());
+        assertEquals(new FeaturesView(true, true, true, true), env.m.queries.bootstrap(c2).config().features());
+        assertEquals(1, env.m.queries.bootstrap(c2).streakReward());
+        String run2 = env.m.runs.start(c2).run().runId();
+        env.m.runs.leave(c2, run2);
+        assertFalse(env.m.queries.products(c2, run2).items().isEmpty());
+        assertNotNull(env.m.queries.share(c2, run2));
+    }
 }

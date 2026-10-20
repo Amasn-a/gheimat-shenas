@@ -6,7 +6,7 @@
   - For standalone runs and tests, `PriceExpertServer` puts a small JDK `HttpServer` edge (virtual threads) in front of it.
   - Inside supercoin, the Spring application would construct `PriceExpertModule` and map the same routes. Spring was not available in this environment because Maven Central was blocked, so the HTTP edge is the stand-in.
 - **Database:** PostgreSQL 16. Migrations live in `backend/src/main/resources/db/migration` and use Flyway file names (`V1__…sql`). A minimal built-in migrator applies them, so Flyway can take over unchanged.
-- **Libraries** (all from the Debian Maven repository used offline): postgresql 42.7.2, HikariCP, Jackson 2.14, slf4j. Tests use JUnit 5 through the console launcher.
+- **Libraries:** postgresql 42.7.2, HikariCP 2.7.9, Jackson 2.14, slf4j 1.7, JUnit 5.10. The team build (`backend/gradlew`, Gradle 8.14.3) resolves them from Maven Central or the company mirror. A machine without Maven Central can use a local Maven-layout repository: `./gradlew build -PofflineRepo=/usr/share/maven-repo` (the Debian/Ubuntu `lib*-java` packages; JUnit then runs through the console standalone jar).
 - **Player and admin:** vanilla ES modules, no runtime dependencies, bundled with esbuild 0.28.2 (`npm run build`). The build target is `es2021`. The WebView floor is not known yet (it depends on the host docs).
 - **QA:** Python 3, Playwright with Chromium, psycopg2, ffmpeg (for frames from the motion video).
 
@@ -51,4 +51,4 @@ Production start-up is refused until these are replaced (see `docs/STATUS.md`):
 - the Super App player authenticator;
 - the campaign code source.
 
-Admin sign-in is a development stand-in for organisation SSO. The player's `host-boot.js` has to call `configureHost({...})` with the real bridge. Without it the production player shows G11.AUTH_ERROR, which is the expected, truthful behaviour.
+Admin sign-in is a development stand-in for organisation SSO. The player's `host-boot.js` has to call `configureHost({...})` with the real bridge. Without it the production player shows G11.AUTH_ERROR, which is the expected, truthful behaviour. `host-boot.js` is the production entry point: the build bundles it together with `host.js` and the game, so its `configureHost` call configures the same adapter the game uses (it loads the game only after configuring). Replace the empty object there and rebuild; do not load a separate copy of `host.js`.

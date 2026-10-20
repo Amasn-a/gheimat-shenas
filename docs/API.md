@@ -9,7 +9,7 @@ Every route, field name and error code below is a **proposal implemented in this
 - **Idempotency:** every POST requires `Idempotency-Key: <uuid>`, scoped to (user, method, path, key).
   - Same key and same body: the stored response is returned with `Idempotent-Replay: true`.
   - Same key with a different body: `422 IDEMPOTENCY_MISMATCH`.
-  - Same key while the first request is still running: `409 REQUEST_IN_PROGRESS`.
+  - Same key while the first request is still running: `409 REQUEST_IN_PROGRESS`. The first request holds the key on a lease (proposed: 30 s for player routes, 15 min for admin writes). If its process dies, a retry with the same key and body takes the key over after the lease and executes; the domain rules keep that safe (first answer wins, one payment operation per offer).
   - Errors are not stored, so a retry is evaluated again.
   - The client keeps one key per logical action (for example `answer:<question_id>`). It uses a new key only for a deliberately new attempt, such as a retry after a rejected debit.
 - **Validation:** unknown fields, duplicate JSON keys, wrong types and bodies over 16 KiB get `422 VALIDATION_FAILED`. The client never sends a time, price, score, cost or balance.
@@ -25,15 +25,15 @@ Every route, field name and error code below is a **proposal implemented in this
 | `POST /runs` | Start, or replace another device's run (R-28) | `201 StartView` |
 | `GET /runs/{run_id}` | Resume, poll, reconcile | `RunView` |
 | `POST /runs/{run_id}/reveal` | «نمایش بده»: releases the next question and starts its clock. A retry returns the same question and deadlines | `RunView` (or FINISHED with `no_products`) |
-| `POST /questions/{question_id}/answer` `{choice: higher\|lower}` | Answer. Accepted while server receive time ≤ `accept_deadline` (11,000 ms inclusive, R-45) | `AnswerView` |
+| `POST /questions/{question_id}/answer` `{choice: higher\|lower}` | Answer. Accepted while server receive time ≤ `accept_deadline` (11,000 ms inclusive, R-45). The receipt is recorded before any run lock is taken; when the question is due to time out, a recorded receipt is settled as the answer instead, so a slow request cannot turn an on-time answer into a timeout. The first recorded receipt wins. Leave, block and replacement still end an unsettled question with no correctness (R-59) | `AnswerView` |
 | `POST /runs/{run_id}/offer` | F-02: activates the continue offer after the miss feedback. The window starts at activation; eligibility is checked again | `ActivationView` (`offer` or `no_offer_reason`) |
 | `POST /offers/{offer_id}/continue` | Paid continue (10 DigiCoin, limit 1) | `202 OperationView` |
 | `POST /offers/{offer_id}/skip` | «رد کردن» | `RunView` |
 | `POST /runs/{run_id}/leave` | Leave confirm (G03.LEAVE_CONFIRM) | `RunView` |
 | `GET /operations/{operation_id}` | Payment status polling (G06) | `OperationView` |
 | `GET /runs/{run_id}/result` | G07 result | `ResultView` |
-| `GET /runs/{run_id}/products` | G08 products of this run (UX-5) | `ProductsView` |
-| `GET /runs/{run_id}/share` | G09 share data (no player name) | `ShareView` |
+| `GET /runs/{run_id}/products` | G08 products of this run (UX-5). `409 FEATURE_DISABLED` when the run's configuration has the products switch off | `ProductsView` |
+| `GET /runs/{run_id}/share` | G09 share data (no player name). `409 FEATURE_DISABLED` when the run's configuration has the share switch off | `ShareView` |
 | `POST /player/onboarding` | First help seen | `{ok:true}` |
 
 ### Main shapes
@@ -42,7 +42,7 @@ Every route, field name and error code below is a **proposal implemented in this
 - Identity and progress: `run_id`, `state` (READY · QUESTION_OPEN · AWAITING_OFFER · OFFER_OPEN · PAYMENT_PENDING · FINISHED), `finish_reason` (wrong · timeout · skipped · expired · continue_failed · left · no_products · inactive · game_off · blocked · replaced), `no_offer_reason` (no_funds · limit_used · game_off · disabled · blocked · no_products), `score`, `record`, `continues_used`, `highest_checkpoint`.
 - Products and questions: `reference {display_title, image_url, price}`, `question {question_id, product{display_title, image_url}, t0, input_deadline, accept_deadline}` (never a price), `last_result {question_id, result, choice, revealed_price, equal_prices, direction, settled_at}`.
 - Offer and payment: `offer {offer_id, state, opened_at, deadline, cost}`, `operation {operation_id, status}`, `awaiting_offer_until`.
-- Device, snapshot and time: `on_this_device`, and `run_config` (the run's config snapshot: `input_ms`, `accept_ms`, `offer_ms`, `checkpoint_auto_continue_ms`, `checkpoints[]`, `continue_rule`). On another device `question` is null, which keeps the response minimal. Plus `server_time`.
+- Device, snapshot and time: `on_this_device`, and `run_config` (the run's config snapshot: `input_ms`, `accept_ms`, `offer_ms`, `checkpoint_auto_continue_ms`, `checkpoints[]`, `continue_rule`, `features {streak, share, products, haptics}` — the A01 switches of that version; the client hides what is off). On another device `question` is null, which keeps the response minimal. Plus `server_time`.
 
 **AnswerView**
 - Verdict: `question_id`, `result` (correct · wrong · timeout), `choice`, `equal_prices`, `revealed_price`, `direction`.
@@ -61,7 +61,7 @@ Every route, field name and error code below is a **proposal implemented in this
 
 **ProductsView:** `items[] {position, role, display_title, image_url, game_price (null while unanswered), result, is_loss, link}` and `loss_product_id`. `loss_product_id` is set only when the run ended on a miss.
 
-**BootstrapView:** `access {status: ok|blocked|game_off, message}`, `first_visit`, `quota {plays_left, plays_per_day, resets_at}`, `record`, `best_checkpoint`, `streak {days, reward_today, lost_notice}`, `balance`, `active_run`, `config`, `streak_reward`, `campaign`, `server_time`.
+**BootstrapView:** `access {status: ok|blocked|game_off, message}`, `first_visit`, `quota {plays_left, plays_per_day, resets_at}`, `record`, `best_checkpoint`, `streak {days, reward_today, lost_notice}`, `balance`, `active_run`, `config` (same shape as `run_config`, for the active version, including `features`), `streak_reward` (the reward actually paid: 0 while the streak switch is off), `campaign`, `server_time`.
 
 ### Error codes (player)
 
@@ -76,6 +76,8 @@ Every route, field name and error code below is a **proposal implemented in this
 | `CONTINUE_LIMIT_USED` | 409 | Continue limit reached |
 | `OPERATION_PENDING` | 409 | A payment is already being processed for this offer |
 | `PLAYER_BLOCKED` · `GAME_UNAVAILABLE` | 409 | G11.BLOCKED · G11.GAME_OFF |
+| `FEATURE_DISABLED` | 409 | Products or share requested for a run whose configuration has that A01 switch off; `feature` names it |
+| `REQUEST_IN_PROGRESS` | 409 | The same key is still being processed (see Idempotency) |
 | `IDEMPOTENCY_MISMATCH` | 422 | Key reused with another body |
 | `VALIDATION_FAILED` | 422 | Bad or unknown input |
 | `UNAUTHENTICATED` · `NOT_FOUND` · `RATE_LIMITED` | 401 · 404 · 429 | |

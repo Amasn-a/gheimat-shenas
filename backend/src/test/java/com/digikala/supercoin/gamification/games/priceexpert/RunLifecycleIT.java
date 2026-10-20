@@ -122,11 +122,20 @@ class RunLifecycleIT {
     }
 
     @Test void t15_leaveDuringOpenQuestionKeepsCheckpointAndAddsNoCorrectness() {
-        String u = user();
-        Caller c = env.caller(u);
-        String run = env.m.runs.start(c).run().runId();
-        for (int i = 0; i < 3; i++) answer(c, reveal(c, run), true, 1500);
-        reveal(c, run);
+        Caller c = null;
+        String run = null;
+        for (int attempt = 0; attempt < 8 && run == null; attempt++) {    // the real catalog is sparse at some bands: retry a path
+            c = env.caller(user());
+            String r = env.m.runs.start(c).run().runId();
+            boolean open = true;
+            for (int i = 0; i < 4 && open; i++) {                        // 3 correct answers, then a fourth question left open
+                RunView q = reveal(c, r);
+                open = q.question() != null;
+                if (open && i < 3) answer(c, q, true, 1500);
+            }
+            if (open) run = r;
+        }
+        assertNotNull(run, "no path with a fourth question in 8 attempts");
         RunView after = env.m.runs.leave(c, run);
         assertEquals("FINISHED", after.state());
         assertEquals("left", after.finishReason());
@@ -242,6 +251,48 @@ class RunLifecycleIT {
         assertTrue(env.m.deadlines.sweep(100) >= 1);
         Instant settled = ((java.sql.Timestamp) env.scalar("SELECT settled_at FROM pe_question WHERE question_id = ?", q2.question().questionId())).toInstant();
         assertEquals(q2.question().acceptDeadline(), settled);
+    }
+
+    @Test void t11b_onTimeAnswerProcessedAfterTheGraceStillWins() {
+        Caller c = env.caller(user());
+        RunView q = reveal(c, env.m.runs.start(c).run().runId());
+        // review of 716d889: received at t0 + 10,990 ms, processed at t0 + 12,001 ms (accept deadline + grace + 1 ms)
+        env.clock.set(q.question().t0().plusMillis(12_001));
+        AnswerView a = answer(c, q, true, 10_990);
+        assertEquals("correct", a.result(), "the recorded arrival time decides, not the processing time");
+        assertEquals(1, a.score());
+        assertEquals(0, env.count("SELECT count(*) FROM pe_alert WHERE kind = 'ON_TIME_ANSWER_TIMED_OUT'"));
+    }
+
+    @Test void t11c_recordedReceiptBeatsTheSweep_evenIfItsRequestDied() {
+        Caller c = env.caller(user());
+        RunView q = reveal(c, env.m.runs.start(c).run().runId());
+        String qid = q.question().questionId(), right = env.rightChoice(q.runId());
+        Instant received = q.question().t0().plusMillis(10_800);
+        // another device of the account cannot record an answer
+        expect("ACTIVE_RUN_OTHER_DEVICE", () -> env.m.runs.answer(env.caller(c.userId().substring(2), 1), qid, Choice.valueOf(right), received));
+        assertNull(env.scalar("SELECT received_at FROM pe_question WHERE question_id = ?", qid));
+        // the request recorded its receipt, then stalled before taking the run lock (or its process died)
+        assertTrue(env.m.ctx.tx().inTransaction(() -> env.m.ctx.runs().recordAnswerReceipt(qid, c.userId(), c.deviceId(), Choice.valueOf(TestEnv.flip(right)), received)));
+        env.clock.set(q.question().acceptDeadline().plusMillis(5_000));
+        env.m.deadlines.sweep(100);
+        assertEquals("WRONG", env.scalar("SELECT state FROM pe_question WHERE question_id = ?", qid), "settled as the answer, not as a timeout");
+        assertEquals(received, ((java.sql.Timestamp) env.scalar("SELECT miss_at FROM pe_run WHERE run_id = ?", q.runId())).toInstant(), "miss stamped at the receipt");
+        // the first receipt wins: a later retry with the other choice gets the settled outcome
+        assertEquals("wrong", env.m.runs.answer(c, qid, Choice.valueOf(right), received).result());
+    }
+
+    @Test void t11d_leaveBeforeAnUnsettledReceiptKeepsR59() {
+        Caller c = env.caller(user());
+        RunView q = reveal(c, env.m.runs.start(c).run().runId());
+        String qid = q.question().questionId();
+        assertTrue(env.m.ctx.tx().inTransaction(() -> env.m.ctx.runs().recordAnswerReceipt(qid, c.userId(), c.deviceId(),
+                Choice.valueOf(env.rightChoice(q.runId())), q.question().t0().plusMillis(2_000))));
+        RunView after = env.m.runs.leave(c, q.runId());                 // the leave reaches the run before the answer request
+        assertEquals("left", after.finishReason());
+        assertEquals(0, after.score(), "an unsettled answer gives no correctness on leave (R-59)");
+        assertEquals("UNANSWERED", env.scalar("SELECT state FROM pe_question WHERE question_id = ?", qid));
+        assertNull(env.scalar("SELECT choice FROM pe_question WHERE question_id = ?", qid));
     }
 
     // ------------------------------------------------------------------------------------------------ T13, T14, T16

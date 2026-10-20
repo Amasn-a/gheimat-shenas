@@ -144,4 +144,17 @@ class DomainRulesTest {
         var bounded = ConfigValidator.validate(ok, new ConfigValidator.Bounds(2, null, null, null, null));
         assertEquals("must be at most 2", bounded.get("plays_per_day"));
     }
+
+    @Test void dailyCapNeverWraps() {
+        // review of 716d889: 3 × 1,500,000,000 + 1 wrapped to 205,032,705 in 32-bit arithmetic and passed validation
+        GameConfig b = LaunchConfig.value();
+        List<GameConfig.Checkpoint> cps = b.checkpoints().stream()
+                .map(c -> new GameConfig.Checkpoint(c.id(), c.requiredCorrect(), c.title(), c.badgeAssetId(), 1_500_000_000, c.enabled())).toList();
+        GameConfig huge = new GameConfig(3, b.inputMs(), b.acceptMs(), b.offerMs(), b.inactivityMs(), b.offerActivationMs(), b.timeoutGraceMs(),
+                b.checkpointAutoContinueMs(), cps, b.continueRule(), 1, b.bands(), b.payoutAlertThreshold(), b.priceChangeThresholdBp(), b.features());
+        assertEquals(4_500_000_001L, huge.dailyAccountCapExact());
+        assertThrows(ArithmeticException.class, huge::dailyAccountCap, "an oversized cap throws instead of wrapping");
+        assertTrue(ConfigValidator.validate(huge, ConfigValidator.Bounds.pending()).containsKey("daily_account_cap"), "rejected before publish");
+        assertTrue(ConfigValidator.validate(b, ConfigValidator.Bounds.pending()).isEmpty());
+    }
 }

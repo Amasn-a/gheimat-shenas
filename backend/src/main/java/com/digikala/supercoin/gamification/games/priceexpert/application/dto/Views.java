@@ -29,8 +29,12 @@ public final class Views {
 
     public record ContinueRuleView(boolean enabled, int cost, int cap) {}
 
+    /** A01 switches of the configuration version the view belongs to; the client hides what is off, the server refuses it. */
+    public record FeaturesView(boolean streak, boolean share, boolean products, boolean haptics) {}
+
     public record RunConfigView(int configVersion, int catalogVersion, long inputMs, long acceptMs, long offerMs,
-                                long checkpointAutoContinueMs, List<CheckpointView> checkpoints, ContinueRuleView continueRule) {}
+                                long checkpointAutoContinueMs, List<CheckpointView> checkpoints, ContinueRuleView continueRule,
+                                FeaturesView features) {}
 
     public record RunView(String runId, String state, String finishReason, String noOfferReason, int score, int record,
                           int continuesUsed, CheckpointView highestCheckpoint, ReferenceCard reference, QuestionView question,
