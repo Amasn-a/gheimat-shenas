@@ -28,8 +28,9 @@ public final class AdminService {
     public record FieldChange(String field, Object before, Object after) {}
     public record ConfigOverview(StoredConfig active, StoredConfig draft, List<StoredConfig> versions, Map<String, String> draftErrors,
                                  List<FieldChange> draftChanges, long activeDailyCap, Long draftDailyCap, Map<String, Object> bounds,
-                                 boolean gameEnabled, String playerMessage, int settingsRevision) {}
-    public record DraftResult(int version, Map<String, String> errors, List<FieldChange> changes, long dailyCap) {}
+                                 boolean gameEnabled, String playerMessage, int settingsRevision, String draftRevision) {}
+    /** {@code revision} identifies the saved content; send it back to save over, discard or publish exactly this draft. */
+    public record DraftResult(int version, Map<String, String> errors, List<FieldChange> changes, long dailyCap, String revision) {}
     public record PublishResult(int activeVersion, Instant publishedAt, int dailyCap) {}
     public record AvailabilityResult(boolean enabled, String playerMessage, int runsClosed, int questionsStillOpen, int paymentsPending) {}
 
@@ -54,6 +55,11 @@ public final class AdminService {
     }
 
     static void requireEditor(Admin a) { if (a.role() != Role.EDITOR) throw GameException.forbidden(); }
+
+    /** Consequential operator actions carry a reason in the audit; enforced here, not only by the admin UI. */
+    static void requireReason(String reason) {
+        if (reason == null || reason.isBlank()) throw GameException.validation("reason is required", Map.of("reason", "required"));
+    }
 
     // ------------------------------------------------------------------------------------------------ bootstrap
 
@@ -85,17 +91,23 @@ public final class AdminService {
             List<FieldChange> changes = draft == null || active == null ? List.of() : diff(active.config(), draft.config());
             return new ConfigOverview(active, draft, ctx.configs().versions(20), errors, changes,
                     active == null ? 0 : active.config().dailyAccountCapExact(), draft == null ? null : draft.config().dailyAccountCapExact(), bounds(),
-                    s.gameEnabled(), s.playerMessage(), s.revision());
+                    s.gameEnabled(), s.playerMessage(), s.revision(), draft == null ? null : revision(draft.config()));
         });
     }
 
-    public DraftResult saveDraft(Admin a, GameConfig cfg) {
+    /**
+     * Saves the single shared draft. {@code expectedRevision} is the revision of the draft the editor loaded (null when
+     * they saw none): another editor's newer save, a discard or a publish in between is a DRAFT_CHANGED conflict, so
+     * nobody overwrites or publishes content they have not reviewed.
+     */
+    public DraftResult saveDraft(Admin a, GameConfig cfg, String expectedRevision) {
         requireEditor(a);
         return ctx.tx().inTransaction(() -> {
             Instant now = ctx.now();
             Settings s = ctx.configs().lockSettings();
             StoredConfig active = ctx.configs().version(s.activeConfigVersion()).orElseThrow();
-            Optional<StoredConfig> existing = ctx.configs().versions(20).stream().filter(v -> "DRAFT".equals(v.status())).findFirst();
+            Optional<StoredConfig> existing = currentDraft();
+            requireRevision(existing.orElse(null), expectedRevision);
             int version;
             String before;
             if (existing.isPresent()) {
@@ -108,15 +120,17 @@ public final class AdminService {
             }
             Map<String, String> errors = ConfigValidator.validate(cfg, ctx.bounds());
             ctx.audit().append(a.username(), a.role().name(), "config.draft", "config:" + version, before, json.apply(cfg), null, null, now);
-            return new DraftResult(version, errors, diff(active.config(), cfg), cfg.dailyAccountCapExact());   // a draft may be invalid: never throw here
+            return new DraftResult(version, errors, diff(active.config(), cfg), cfg.dailyAccountCapExact(), revision(cfg));   // a draft may be invalid: never throw here
         });
     }
 
-    public void discardDraft(Admin a, int version) {
+    public void discardDraft(Admin a, int version, String draftRevision) {
         requireEditor(a);
         ctx.tx().run(() -> {
+            ctx.configs().lockSettings();                                      // serialised with save and publish
             StoredConfig d = ctx.configs().version(version).orElseThrow(GameException::notFound);
             if (!"DRAFT".equals(d.status())) throw GameException.conflict("NOT_A_DRAFT", "only drafts can be discarded");
+            requireRevision(d, draftRevision);
             ctx.configs().retire(version);
             ctx.audit().append(a.username(), a.role().name(), "config.discard", "config:" + version, json.apply(d.config()), null, null, null, ctx.now());
         });
@@ -126,7 +140,7 @@ public final class AdminService {
      * Publishes a validated draft. {@code expectedActiveVersion} stops two Editors overwriting each other
      * (VERSION_CONFLICT). Runs already started keep their pinned version; today's cap high-water is raised (R-47).
      */
-    public PublishResult publish(Admin a, int version, int expectedActiveVersion, String reason) {
+    public PublishResult publish(Admin a, int version, int expectedActiveVersion, String draftRevision, String reason) {
         requireEditor(a);
         return ctx.tx().inTransaction(() -> {
             Instant now = ctx.now();
@@ -135,6 +149,7 @@ public final class AdminService {
                 throw GameException.conflict("VERSION_CONFLICT", "the active version changed; reload", Map.of("active_version", s.activeConfigVersion()));
             StoredConfig draft = ctx.configs().version(version).orElseThrow(GameException::notFound);
             if (!"DRAFT".equals(draft.status())) throw GameException.conflict("NOT_A_DRAFT", "only a draft can be published");
+            requireRevision(draft, draftRevision);                             // exactly the content the editor reviewed
             Map<String, String> errors = ConfigValidator.validate(draft.config(), ctx.bounds());
             if (!errors.isEmpty()) throw GameException.validation("draft has validation errors", Map.of("fields", errors));
             StoredConfig old = ctx.configs().version(s.activeConfigVersion()).orElseThrow();
@@ -142,7 +157,8 @@ public final class AdminService {
             ctx.configs().retire(old.version());
             ctx.configs().saveSettings(new Settings(version, s.activeCatalogVersion(), s.gameEnabled(), s.playerMessage(), s.revision() + 1, a.username(), now));
             ctx.ledger().raiseCapHighWater(BusinessCalendar.dateOf(now), draft.config().dailyAccountCap(), now);
-            ctx.audit().append(a.username(), a.role().name(), "config.publish", "config:" + version, json.apply(old.config()), json.apply(draft.config()), reason, null, now);
+            ctx.audit().append(a.username(), a.role().name(), "config.publish", "config:" + version, json.apply(old.config()), json.apply(draft.config()), reason,
+                    "config:" + old.version(), now);                           // correlation: the version it replaced
             ctx.ledger().alert("ADMIN_PUBLISH", "publish:" + version, "{\"version\":" + version + ",\"by\":\"" + a.username() + "\"}", now);
             return new PublishResult(version, now, draft.config().dailyAccountCap());
         });
@@ -205,9 +221,13 @@ public final class AdminService {
             return s;
         });
         int closed = 0, open = 0, pending = 0;
-        if (!enabled) {
-            List<String> active = ctx.tx().inTransaction(() -> activeRunIds());
-            for (String runId : active) {
+        String after = null;
+        while (!enabled) {                                                     // every active run, in keyset pages (review b023340 #24)
+            String from = after;
+            List<String> page = ctx.tx().inTransaction(() -> ctx.runs().activeRunIds(from, 500));
+            if (page.isEmpty()) break;
+            after = page.get(page.size() - 1);
+            for (String runId : page) {
                 String state = ctx.tx().inTransaction(() -> {
                     Instant now = ctx.now();
                     Run peek = ctx.runs().findRun(runId).orElseThrow();
@@ -222,10 +242,6 @@ public final class AdminService {
         }
         Objects.requireNonNull(before);
         return new AvailabilityResult(enabled, message, closed, open, pending);
-    }
-
-    private List<String> activeRunIds() {
-        return admins.runs(null, null, 100_000).stream().filter(m -> !"FINISHED".equals(m.get("state"))).map(m -> (String) m.get("run_id")).toList();
     }
 
     public List<Map<String, Object>> runs(Admin a, String userId, String runId) {
@@ -302,6 +318,7 @@ public final class AdminService {
 
     public Map<String, Object> unblock(Admin a, String userId, String reason) {
         requireEditor(a);
+        requireReason(reason);
         return ctx.tx().inTransaction(() -> {
             Instant now = ctx.now();
             Player p = ctx.players().lockOrCreatePlayer(userId, now);
@@ -316,6 +333,7 @@ public final class AdminService {
     /** Manual, audited, idempotent re-queue of an operation that reached NEEDS_REVIEW. */
     public Map<String, Object> retryOperation(Admin a, String operationId, String reason) {
         requireEditor(a);
+        requireReason(reason);
         return ctx.tx().inTransaction(() -> {
             Instant now = ctx.now();
             CoinOperation op = ctx.ledger().lockOperation(operationId).orElseThrow(GameException::notFound);
@@ -327,6 +345,33 @@ public final class AdminService {
             ctx.audit().append(a.username(), a.role().name(), "operation.retry", "operation:" + operationId, "{\"status\":\"NEEDS_REVIEW\"}",
                     "{\"status\":\"UNKNOWN\"}", reason, null, now);
             return Map.of("operation_id", operationId, "status", "UNKNOWN", "changed", true);
+        });
+    }
+
+    /** Campaign codes whose issue exhausted its retries (no code is shown to the player; the reservation stays). */
+    public List<Map<String, Object>> entitlementsNeedingReview(Admin a) {
+        return audited(a, "admin.read.entitlements", "status:NEEDS_REVIEW", () -> ctx.campaigns().entitlementsNeedingReview(200).stream().map(e -> {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("entitlement_id", e.entitlementId()); m.put("campaign_id", e.campaignId()); m.put("user_id", e.userId()); m.put("run_id", e.runId());
+            m.put("attempts", e.attempts()); m.put("last_error", e.lastError()); m.put("created_at", e.createdAt());
+            return m;
+        }).toList());
+    }
+
+    /** Manual, audited re-queue of a code issue in NEEDS_REVIEW. The provider call carries the same entitlement id (idempotent). */
+    public Map<String, Object> retryEntitlement(Admin a, String entitlementId, String reason) {
+        requireEditor(a);
+        requireReason(reason);
+        return ctx.tx().inTransaction(() -> {
+            Instant now = ctx.now();
+            var e = ctx.campaigns().lockEntitlement(entitlementId).orElseThrow(GameException::notFound);
+            if (!"NEEDS_REVIEW".equals(e.status())) return Map.of("entitlement_id", entitlementId, "status", e.status(), "changed", false);
+            ctx.campaigns().updateEntitlement(new com.digikala.supercoin.gamification.games.priceexpert.application.port.out.CampaignRepository.Entitlement(
+                    e.entitlementId(), e.campaignId(), e.userId(), e.runId(), "PENDING", e.amountToman(), null, null, e.providerRef(), 0, now,
+                    e.lastError(), e.createdAt(), null));
+            ctx.audit().append(a.username(), a.role().name(), "entitlement.retry", "entitlement:" + entitlementId, "{\"status\":\"NEEDS_REVIEW\"}",
+                    "{\"status\":\"PENDING\"}", reason, null, now);
+            return Map.of("entitlement_id", entitlementId, "status", "PENDING", "changed", true);
         });
     }
 
@@ -348,8 +393,8 @@ public final class AdminService {
     // ------------------------------------------------------------------------------------------------ A06 history
 
     public List<com.digikala.supercoin.gamification.games.priceexpert.application.port.out.AuditRepository.AuditEvent> audit(
-            Admin a, String area, String actor, Instant from, Instant to, long beforeId) {
-        return ctx.tx().inTransaction(() -> ctx.audit().list(area, actor, from, to, 100, beforeId));
+            Admin a, String area, String actor, boolean changesOnly, Instant from, Instant to, long beforeId) {
+        return ctx.tx().inTransaction(() -> ctx.audit().list(area, actor, changesOnly, from, to, 100, beforeId));
     }
 
     // ------------------------------------------------------------------------------------------------ A07 campaigns
@@ -360,6 +405,7 @@ public final class AdminService {
         requireEditor(a);
         return ctx.tx().inTransaction(() -> {
             Instant now = ctx.now();
+            ctx.campaigns().lockSchedule();                                    // overlap check and insert as one step (review b023340 #16)
             validateCampaign(draft, null);
             Campaign c = new Campaign(Ids.newId(), draft.name().trim(), draft.startsAt(), draft.endsAt(), List.copyOf(draft.codeCheckpointIds()),
                     draft.codeAmountToman(), draft.validityDays(), draft.terms().trim(), draft.codeCap(), draft.budgetToman(), 0, 0, "SCHEDULED");
@@ -375,6 +421,7 @@ public final class AdminService {
         requireEditor(a);
         return ctx.tx().inTransaction(() -> {
             Instant now = ctx.now();
+            ctx.campaigns().lockSchedule();                                    // a stale edit can no longer revive an ended campaign
             Campaign cur = ctx.campaigns().find(campaignId).orElseThrow(GameException::notFound);
             if ("ENDED".equals(cur.status()) || !now.isBefore(cur.startsAt())) throw GameException.conflict("CAMPAIGN_RUNNING", "a running or ended campaign cannot be edited");
             validateCampaign(draft, campaignId);
@@ -390,8 +437,10 @@ public final class AdminService {
 
     public Campaign endCampaign(Admin a, String campaignId, String reason) {
         requireEditor(a);
+        requireReason(reason);
         return ctx.tx().inTransaction(() -> {
             Instant now = ctx.now();
+            ctx.campaigns().lockSchedule();
             Campaign cur = ctx.campaigns().find(campaignId).orElseThrow(GameException::notFound);
             if ("ENDED".equals(cur.status())) return cur;
             Campaign c = new Campaign(cur.campaignId(), cur.name(), cur.startsAt(), now.isBefore(cur.endsAt()) && now.isAfter(cur.startsAt()) ? now : cur.endsAt(),
@@ -424,6 +473,28 @@ public final class AdminService {
     }
 
     // ------------------------------------------------------------------------------------------------ helpers
+
+    private Optional<StoredConfig> currentDraft() {
+        return ctx.configs().versions(20).stream().filter(v -> "DRAFT".equals(v.status())).findFirst();
+    }
+
+    /** Content revision of a draft: a hash of its canonical JSON, so equal content has the same revision. */
+    String revision(GameConfig c) {
+        try {
+            byte[] h = java.security.MessageDigest.getInstance("SHA-256").digest(json.apply(c).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            return java.util.HexFormat.of().formatHex(h, 0, 12);
+        } catch (java.security.NoSuchAlgorithmException e) { throw new IllegalStateException(e); }
+    }
+
+    private void requireRevision(StoredConfig draft, String expected) {
+        String actual = draft == null ? null : revision(draft.config());
+        if (Objects.equals(actual, expected)) return;
+        Map<String, Object> d = new LinkedHashMap<>();
+        d.put("draft_version", draft == null ? null : draft.version());
+        d.put("draft_revision", actual);
+        throw GameException.conflict("DRAFT_CHANGED", draft == null ? "the draft was published or discarded; reload"
+                : "the draft changed since you loaded it; reload and review it", d);
+    }
 
     List<FieldChange> diff(GameConfig before, GameConfig after) {
         Map<String, Object> b = flatten.apply(before), a = flatten.apply(after);

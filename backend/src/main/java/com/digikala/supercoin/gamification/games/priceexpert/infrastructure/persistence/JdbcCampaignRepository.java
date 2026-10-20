@@ -56,6 +56,14 @@ public final class JdbcCampaignRepository implements CampaignRepository {
                 rs -> true, except == null ? "" : except, endsAt, startsAt).isPresent();
     }
 
+    @Override public void lockSchedule() {
+        one("SELECT pg_advisory_xact_lock(918273646)", rs -> true);
+    }
+
+    @Override public List<Entitlement> entitlementsNeedingReview(int limit) {
+        return query("SELECT * FROM pe_campaign_entitlement WHERE status = 'NEEDS_REVIEW' ORDER BY created_at LIMIT ?", JdbcCampaignRepository::entitlement, limit);
+    }
+
     @Override public Optional<Entitlement> entitlement(String campaignId, String userId) {
         return one("SELECT * FROM pe_campaign_entitlement WHERE campaign_id = ? AND user_id = ?", JdbcCampaignRepository::entitlement, campaignId, userId);
     }

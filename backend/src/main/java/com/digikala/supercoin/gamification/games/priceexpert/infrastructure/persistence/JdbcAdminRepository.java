@@ -36,7 +36,7 @@ public final class JdbcAdminRepository implements AdminRepository {
 
     @Override public Optional<Session> session(String tokenHash, Instant now) {
         return one("""
-            SELECT s.username, s.role, s.expires_at FROM pe_admin_session s JOIN pe_admin_user u ON u.username = s.username
+            SELECT s.username, u.role, s.expires_at FROM pe_admin_session s JOIN pe_admin_user u ON u.username = s.username
             WHERE s.token_hash = ? AND s.expires_at > ? AND u.active""",
             rs -> new Session(rs.getString(1), rs.getString(2), ts(rs, "expires_at")), tokenHash, now);
     }

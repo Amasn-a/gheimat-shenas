@@ -44,8 +44,8 @@ const canEdit = () => S.me?.role === 'EDITOR';
 class ApiErr extends Error {
   constructor(status, body) { super(body?.message || 'error'); this.status = status; this.body = body || {}; this.code = this.body.code || (status === 0 ? 'NETWORK' : 'HTTP_' + status); }
 }
-async function api(method, path, body, key) {
-  const headers = {};
+async function api(method, path, body, key, extra) {
+  const headers = { ...extra };
   if (S.token) headers.Authorization = 'Bearer ' + S.token;
   if (method !== 'GET') { headers['Content-Type'] = 'application/json'; headers['Idempotency-Key'] = key || uuid(); }
   let r;
@@ -135,14 +135,34 @@ async function saveDraft() {
   if (S.saving) { S.savePending = true; return; }
   S.saving = true; S.saveErr = false; S.publishFailed = null; render();
   try {
-    const body = clone(S.work);
-    const r = await api('POST', '/config/versions', body);
+    var body = clone(S.work);
+    // the revision of the draft this editor has seen; another editor's save in between is a DRAFT_CHANGED conflict
+    const r = await api('POST', '/config/versions', body, undefined, S.ov.draft_revision ? { 'If-Match': S.ov.draft_revision } : {});
     S.ov.draft = { version: r.version, config: body };
-    S.ov.draft_errors = r.errors; S.ov.draft_changes = r.changes; S.ov.draft_daily_cap = r.daily_cap;
-  } catch (e) { if (e.status !== 401) S.saveErr = failText(e); }
+    S.ov.draft_errors = r.errors; S.ov.draft_changes = r.changes; S.ov.draft_daily_cap = r.daily_cap; S.ov.draft_revision = r.revision;
+  } catch (e) {
+    if (e.code === 'DRAFT_CHANGED') { S.savePending = false; await draftChanged(); }
+    else if (e.status === 0 && await adoptSavedDraft(body)) { /* the save had committed; only its response was lost */ }
+    else if (e.status !== 401) S.saveErr = failText(e);
+  }
   S.saving = false;
   if (S.savePending) { S.savePending = false; return saveDraft(); }
   render();
+}
+const canon = v => JSON.stringify(v, (k, x) => x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.keys(x).sort().map(n => [n, x[n]])) : x);
+/** After a network failure: if the server's draft is exactly what was sent, the save committed; continue from its revision. */
+async function adoptSavedDraft(body) {
+  try {
+    const ov = await api('GET', '/config');
+    if (!ov.draft || canon(ov.draft.config) !== canon(body)) return false;
+    Object.assign(S.ov, { draft: ov.draft, draft_revision: ov.draft_revision, draft_errors: ov.draft_errors, draft_changes: ov.draft_changes, draft_daily_cap: ov.draft_daily_cap });
+    return true;
+  } catch { return false; }
+}
+/** Someone else saved, discarded or published the draft: show the current one; nothing is written over it unseen. */
+async function draftChanged() {
+  S.dialog = null; await loadConfig();
+  S.banner = { kind: 'warn', text: 'پیش‌نویس را ویرایشگر دیگری تغییر داد یا منتشر کرد. نسخه فعلی بارگذاری شد؛ قبل از ذخیره یا انتشار دوباره بررسی کن.' };
 }
 function onFieldChange(el) {
   const p = el.dataset.path, kind = el.dataset.kind;
@@ -407,13 +427,14 @@ function histRow(e) {
   if (e.action === 'config.publish') {
     const d = diffOf(e);
     part = [...new Set(d.map(x => TITLE[section(x.k)]))].join('، ') || 'تنظیمات';
-    ver = ver1 ? (e.before_json ? `${fa(ver1[1] - 1)} → ${fa(ver1[1])}` : fa(ver1[1])) : '—';
+    const prev = (e.correlation_id || '').match(/^config:(\d+)$/);   // the version it replaced, as recorded (never guessed)
+    ver = ver1 ? (prev ? `${fa(prev[1])} → ${fa(ver1[1])}` : fa(ver1[1])) : '—';
     before = d.slice(0, 4).map(x => `${esc(label(x.k))}: ${esc(val(x.k, x.b))}`).join('<br>');
     after = d.slice(0, 4).map(x => `${esc(label(x.k))}: ${esc(val(x.k, x.a))}`).join('<br>') + (d.length > 4 ? `<br><span class="qs-note">و ${fa(d.length - 4)} تغییر دیگر</span>` : '');
     if (!e.before_json) { before = '—'; after = 'مقادیر شروع'; }
   } else if (e.action.startsWith('game.')) {
     part = 'خاموشی بازی';
-    let msg = ''; try { msg = JSON.parse(e.after_json || '{}').player_message || ''; } catch { /* plain */ }
+    let msg = ''; try { const o = JSON.parse(e.after_json || '{}'); msg = o.message || o.player_message || ''; } catch { /* plain */ }
     before = e.action === 'game.on' ? 'خاموش' : 'روشن'; after = (e.action === 'game.on' ? 'روشن' : 'خاموش') + (msg ? ` · «${esc(msg)}»` : '');
   } else if (e.action === 'review.create') {
     part = `بررسی دستی — <span class="ad-mono">${esc((e.target || '').replace('user:', ''))}</span>`;
@@ -437,11 +458,12 @@ function a06() {
   if (h.err) body = `<div class="ad-banner" role="alert">${esc(h.err)} ${btn('تلاش دوباره', 'hist-load')}</div>`;
   else if (!h.items) body = `<div class="qa-card">${skel()}${skel('80%')}${skel('60%')}</div>`;
   else {
-    // shortcut: read-access and draft-save events are filtered client-side per page; add a server filter if pages become sparse
-    let items = h.items.filter(e => !e.action.startsWith('admin.read.') && e.action !== 'config.draft');
-    if (h.f === 'cp') items = items.filter(e => diffOf(e).some(x => x.k.startsWith('checkpoints')));
+    let items = h.items;
+    if (h.f === 'cp') items = items.filter(e => diffOf(e).some(x => x.k.startsWith('checkpoints')));   // checkpoint changes inside publishes
+    const more = h.more ? `<div>${btn(h.loading ? '<span class="qs-spin"></span>' : 'موارد قدیمی‌تر', 'hist-more', { kind: 'secondary', dis: h.loading })}</div>` : '';
     body = items.length ? `<section class="qa-card"><div class="qa-table-wrap"><table class="qa-table"><thead><tr><th>زمان</th><th>مدیر</th><th>بخش</th><th>نسخه</th><th>قبل</th><th>بعد</th></tr></thead><tbody>${items.map(histRow).join('')}</tbody></table></div>
-      ${h.more ? `<div>${btn(h.loading ? '<span class="qs-spin"></span>' : 'موارد قدیمی‌تر', 'hist-more', { kind: 'secondary', dis: h.loading })}</div>` : ''}</section>`
+      ${more}</section>`
+      : h.more ? `<section class="qa-card"><div class="ad-empty"><b>در این بخش از سابقه موردی نیست</b>موارد قدیمی‌تر را ببین.</div>${more}</section>`   // older events may still match
       : `<div class="ad-empty"><b>هنوز تغییری ثبت نشده</b>اولین انتشار تنظیمات یا بررسی دستی اینجا نمایش داده می‌شود.</div>`;
   }
   return `<div class="qa-note">فقط مشاهده؛ تاریخچه قابل ویرایش یا حذف نیست. دسترسی‌های خواندنی در سابقه حسابرسی سرور ثبت می‌شوند.</div>${chips}${body}`;
@@ -555,7 +577,7 @@ async function loadHist(reset) {
   const area = HIST_F.find(x => x[0] === h.f)[2];
   const before = !reset && h.items?.length ? h.items[h.items.length - 1].id : 0;
   try {
-    const page = await api('GET', `/audit?${area ? 'area=' + encodeURIComponent(area) + '&' : ''}${before ? 'before_id=' + before : ''}`);
+    const page = await api('GET', `/audit?changes_only=1&${area ? 'area=' + encodeURIComponent(area) + '&' : ''}${before ? 'before_id=' + before : ''}`);   // reads and draft saves filtered on the server, before paging
     h.items = reset ? page : [...(h.items || []), ...page];
     h.more = page.length === 100;
   } catch (e) { if (e.status !== 401) h.err = failText(e); }
@@ -602,7 +624,7 @@ async function dialogOk() {
   try {
     if (d.kind === 'publish') {
       const v = S.ov.draft.version;
-      const r = await api('POST', `/config/versions/${v}/publish`, { version: v, expected_active_version: S.ov.active.version, reason }, d.key);
+      const r = await api('POST', `/config/versions/${v}/publish`, { version: v, expected_active_version: S.ov.active.version, draft_revision: S.ov.draft_revision, reason }, d.key);
       S.dialog = null; S.publishFailed = null;
       S.banner = { kind: 'ok', text: `✓ منتشر شد · نسخه ${fa(r.active_version)} برای دست‌های جدید فعال است · ${when(r.published_at)} · ${esc(S.me.display_name || S.me.username)}`, link: 'A06' };
       await loadConfig();
@@ -630,7 +652,8 @@ async function dialogOk() {
     if (e.status === 401) return;
     if (d.kind === 'publish') {
       S.dialog = null;
-      if (e.code === 'VERSION_CONFLICT') { S.banner = { kind: 'warn', text: 'نسخه فعال در این فاصله توسط مدیر دیگری تغییر کرد. صفحه با نسخه جدید به‌روز شد؛ تغییرات را دوباره بررسی و منتشر کن.' }; await loadConfig(); }
+      if (e.code === 'DRAFT_CHANGED') await draftChanged();
+      else if (e.code === 'VERSION_CONFLICT') { S.banner = { kind: 'warn', text: 'نسخه فعال در این فاصله توسط مدیر دیگری تغییر کرد. صفحه با نسخه جدید به‌روز شد؛ تغییرات را دوباره بررسی و منتشر کن.' }; await loadConfig(); }
       else if (e.code === 'VALIDATION_FAILED') { S.banner = { kind: 'bad', text: 'پیش‌نویس خطا دارد و منتشر نشد.' }; await loadConfig(); }
       else S.publishFailed = { key: d.key, reason };            // A00.PUBLISH_FAILED: retry reuses the same idempotency key
     } else { d.busy = false; d.err = failText(e); }
@@ -730,8 +753,8 @@ document.addEventListener('click', async ev => {
     case 'toggle': setPath(S.work, t.dataset.path, !getPath(S.work, t.dataset.path)); saveDraft(); break;
     case 'save-retry': saveDraft(); break;
     case 'discard':
-      try { await api('POST', `/config/versions/${S.ov.draft.version}/discard`, {}); S.publishFailed = null; S.saveErr = false; await loadConfig(); toast('تغییرات لغو شد.'); }
-      catch (e) { if (e.status !== 401) toast(failText(e)); }
+      try { await api('POST', `/config/versions/${S.ov.draft.version}/discard`, {}, undefined, { 'If-Match': S.ov.draft_revision }); S.publishFailed = null; S.saveErr = false; await loadConfig(); toast('تغییرات لغو شد.'); }
+      catch (e) { if (e.code === 'DRAFT_CHANGED') await draftChanged(); else if (e.status !== 401) toast(failText(e)); }
       render(); break;
     case 'publish': S.dialog = { kind: 'publish', key: uuid() }; render(); break;
     case 'publish-retry': S.dialog = { kind: 'publish', key: S.publishFailed.key, reason: S.publishFailed.reason || '' }; dialogOk(); break;

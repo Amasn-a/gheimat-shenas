@@ -171,10 +171,7 @@ async def s_charge_late(b):
     dev(u, {"script": [{"op": "charge", "outcome": "late_success", "late_ms": 12000}]})
     await act(pg, "continue")
     await wait_view(pg, "G06.FAILED_END", 16000); await pg.wait_for_timeout(300); await shot(pg, "charge-late-1-ended-unconfirmed")
-    try:
-        await wait_view(pg, "G06.REFUNDED", 25000); await shot(pg, "charge-late-2-refunded")
-    except AssertionError as e:
-        log.append(f"  refund not surfaced on this screen: {e}")
+    await wait_view(pg, "G06.REFUNDED", 25000); await shot(pg, "charge-late-2-refunded")   # a gate: the refund must reach the screen
     t = time.time()
     while time.time() - t < 25:
         bal = http("GET", f"/dev/v1/price-expert/fake-coin/u_{u}")["balance"]

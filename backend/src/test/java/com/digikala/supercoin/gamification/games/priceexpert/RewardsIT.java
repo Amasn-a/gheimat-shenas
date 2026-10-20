@@ -205,10 +205,10 @@ class RewardsIT {
         GameConfig b = LaunchConfig.value();
         GameConfig four = new GameConfig(4, b.inputMs(), b.acceptMs(), b.offerMs(), b.inactivityMs(), b.offerActivationMs(), b.timeoutGraceMs(),
                 b.checkpointAutoContinueMs(), b.checkpoints(), b.continueRule(), b.streakReward(), b.bands(), null, null, b.features());
-        var d1 = env.m.admin.saveDraft(EDITOR, four);
-        env.m.admin.publish(EDITOR, d1.version(), active, "test");
-        var d2 = env.m.admin.saveDraft(EDITOR, LaunchConfig.value());
-        env.m.admin.publish(EDITOR, d2.version(), d1.version(), "restore");
+        var d1 = env.m.admin.saveDraft(EDITOR, four, null);
+        env.m.admin.publish(EDITOR, d1.version(), active, d1.revision(), "test");
+        var d2 = env.m.admin.saveDraft(EDITOR, LaunchConfig.value(), null);
+        env.m.admin.publish(EDITOR, d2.version(), d1.version(), d2.revision(), "restore");
         assertEquals(161, env.count("SELECT cap_high_water FROM pe_daily_cap WHERE business_date = ?", today));
 
         // 20 concurrent credits of 10 for one account and day: never above the cap
@@ -251,8 +251,8 @@ class RewardsIT {
         GameConfig b = LaunchConfig.value();
         GameConfig withAlert = new GameConfig(b.playsPerDay(), b.inputMs(), b.acceptMs(), b.offerMs(), b.inactivityMs(), b.offerActivationMs(), b.timeoutGraceMs(),
                 b.checkpointAutoContinueMs(), b.checkpoints(), b.continueRule(), b.streakReward(), b.bands(), 1L, null, b.features());
-        var d = env.m.admin.saveDraft(EDITOR, withAlert);
-        env.m.admin.publish(EDITOR, d.version(), active, "test");
+        var d = env.m.admin.saveDraft(EDITOR, withAlert, null);
+        env.m.admin.publish(EDITOR, d.version(), active, d.revision(), "test");
         try {
             Caller c2 = env.caller(user());
             String r2 = playTo(c2, 3);
@@ -263,8 +263,8 @@ class RewardsIT {
             assertEquals("succeeded", res.checkpointReward().status());
             assertEquals("ok", env.m.queries.bootstrap(c2).access().status());
         } finally {
-            var back = env.m.admin.saveDraft(EDITOR, LaunchConfig.value());
-            env.m.admin.publish(EDITOR, back.version(), d.version(), "restore");
+            var back = env.m.admin.saveDraft(EDITOR, LaunchConfig.value(), null);
+            env.m.admin.publish(EDITOR, back.version(), d.version(), back.revision(), "restore");
         }
     }
 
@@ -349,8 +349,8 @@ class RewardsIT {
         GameConfig off = new GameConfig(b.playsPerDay(), b.inputMs(), b.acceptMs(), b.offerMs(), b.inactivityMs(), b.offerActivationMs(), b.timeoutGraceMs(),
                 b.checkpointAutoContinueMs(), b.checkpoints(), b.continueRule(), b.streakReward(), b.bands(), b.payoutAlertThreshold(),
                 b.priceChangeThresholdBp(), new GameConfig.Features(false, false, false, false));
-        var d = env.m.admin.saveDraft(EDITOR, off);
-        env.m.admin.publish(EDITOR, d.version(), active, "switches off");
+        var d = env.m.admin.saveDraft(EDITOR, off, null);
+        env.m.admin.publish(EDITOR, d.version(), active, d.revision(), "switches off");
         Caller c = env.caller(user());
         String run;
         try {
@@ -363,8 +363,8 @@ class RewardsIT {
             assertEquals("FEATURE_DISABLED", assertThrows(GameException.class, () -> env.m.queries.products(c, run)).code());
             assertEquals("FEATURE_DISABLED", assertThrows(GameException.class, () -> env.m.queries.share(c, run)).code());
         } finally {
-            var restore = env.m.admin.saveDraft(EDITOR, LaunchConfig.value());
-            env.m.admin.publish(EDITOR, restore.version(), d.version(), "restore");
+            var restore = env.m.admin.saveDraft(EDITOR, LaunchConfig.value(), null);
+            env.m.admin.publish(EDITOR, restore.version(), d.version(), restore.revision(), "restore");
         }
         // the finished run keeps its pinned version; a new run under the restored version has everything
         assertEquals("FEATURE_DISABLED", assertThrows(GameException.class, () -> env.m.queries.share(c, run)).code());
@@ -375,5 +375,33 @@ class RewardsIT {
         env.m.runs.leave(c2, run2);
         assertFalse(env.m.queries.products(c2, run2).items().isEmpty());
         assertNotNull(env.m.queries.share(c2, run2));
+    }
+
+    // ------------------------------------------------------------------------------------------------ draft revisions
+
+    static GameConfig plays(int n) {
+        GameConfig b = LaunchConfig.value();
+        return new GameConfig(n, b.inputMs(), b.acceptMs(), b.offerMs(), b.inactivityMs(), b.offerActivationMs(), b.timeoutGraceMs(),
+                b.checkpointAutoContinueMs(), b.checkpoints(), b.continueRule(), b.streakReward(), b.bands(), b.payoutAlertThreshold(),
+                b.priceChangeThresholdBp(), b.features());
+    }
+
+    @Test void anEditorCannotPublishOrOverwriteADraftChangedByAnotherEditor() {
+        // review of b023340, finding 6: A reviewed 4 plays, B changed the shared draft to 5, A published and 5 went live
+        Admin b = new Admin("editor-b", Role.EDITOR);
+        int active = env.m.ctx.tx().inTransaction(env.m.ctx::activeConfigVersion);
+        var seenByA = env.m.admin.saveDraft(EDITOR, plays(4), null);
+        var savedByB = env.m.admin.saveDraft(b, plays(5), seenByA.revision());
+        assertNotEquals(seenByA.revision(), savedByB.revision());
+        assertEquals("DRAFT_CHANGED", assertThrows(GameException.class,
+                () -> env.m.admin.publish(EDITOR, seenByA.version(), active, seenByA.revision(), "A publishes what A reviewed")).code());
+        assertEquals("DRAFT_CHANGED", assertThrows(GameException.class, () -> env.m.admin.saveDraft(EDITOR, plays(6), seenByA.revision())).code());
+        assertEquals("DRAFT_CHANGED", assertThrows(GameException.class, () -> env.m.admin.saveDraft(EDITOR, plays(6), null)).code(),
+                "a draft exists: saving without its revision would overwrite it unseen");
+        assertEquals(active, (int) env.m.ctx.tx().inTransaction(env.m.ctx::activeConfigVersion), "nothing was published");
+        assertEquals(5, env.m.admin.config(EDITOR).draft().config().playsPerDay(), "B's content is intact");
+        assertEquals("DRAFT_CHANGED", assertThrows(GameException.class, () -> env.m.admin.discardDraft(EDITOR, savedByB.version(), seenByA.revision())).code());
+        env.m.admin.discardDraft(EDITOR, savedByB.version(), env.m.admin.config(EDITOR).draftRevision());   // after reloading
+        assertNull(env.m.admin.config(EDITOR).draft());
     }
 }

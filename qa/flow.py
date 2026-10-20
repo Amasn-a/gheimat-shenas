@@ -71,12 +71,14 @@ async def main():
             await wait_view(pg, ("G03.READY", "G04.REACHED"), 4000)
             if i < 2: await pg.wait_for_timeout(700)
         await wait_view(pg, "G04.REACHED", 3000)
-        await pg.wait_for_timeout(500); await shot(pg, "06_checkpoint")
-        # an early tap (inside the guard) must not close it
+        # an early tap (inside the 1.2 s guard, measured from opening) must not close it; tap first, screenshot after,
+        # so a slow screenshot cannot push the tap past the guard
         t_open = time.time()
+        await pg.wait_for_timeout(300)
         await pg.mouse.click(187, 400)
         await pg.wait_for_timeout(150)
         assert (await view(pg)) == "G04.REACHED", "checkpoint closed by an early tap"
+        await shot(pg, "06_checkpoint")
         # automatic continuation (F-01): closes by itself; measure
         await wait_view(pg, "G03.READY", 9000)
         log.append(f"checkpoint auto-closed after {time.time() - t_open:.2f}s (expected ≈ 0.4 + 5.0 s from opening)")
@@ -109,5 +111,6 @@ async def main():
         log.append(f"page errors: {errors}")
         await b.close()
     print("\n".join(log))
+    if scroll or errors: sys.exit(1)                             # quality gates, not just log lines
 
 asyncio.run(main())

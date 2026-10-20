@@ -15,7 +15,8 @@ public interface LedgerRepository {
     Optional<CoinOperation> findOperation(String operationId);
     Optional<CoinOperation> lockOperation(String operationId);
     void updateOperation(CoinOperation op);
-    List<String> dueOperationIds(Instant now, int limit);
+    record DueOperation(String operationId, String userId) {}
+    List<DueOperation> dueOperations(Instant now, int limit);
     List<CoinOperation> operationsOfRun(String runId);
     Optional<CoinOperation> refundOf(String chargeOperationId);
     Optional<CoinOperation> streakRewardOf(String userId, LocalDate capDay);

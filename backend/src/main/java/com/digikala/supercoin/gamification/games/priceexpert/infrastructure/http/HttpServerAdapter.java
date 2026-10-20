@@ -23,9 +23,11 @@ import java.util.logging.Logger;
 import java.util.regex.Matcher;
 
 /**
- * HTTP edge. The trusted receive time of a request ("receivedAt", R-38/R-45) is stamped here, as the first action for
- * the exchange, before the body is read or any lock is taken. Queueing inside the application therefore never counts
- * against the player; time spent before the request reaches this process (reverse proxy, network) is not observable here.
+ * HTTP edge. The trusted receive time of a request ("receivedAt", R-38/R-45) is stamped here when the complete,
+ * size-bounded body has arrived and before any lock is taken: a request whose bytes are still arriving after the cutoff
+ * is late, and queueing inside the application never counts against the player. Reading a request is bounded by
+ * {@code sun.net.httpserver.maxReqTime} (default set below). Time before the request reaches this process (reverse
+ * proxy, network) is not observable here.
  */
 public final class HttpServerAdapter {
     private static final Logger LOG = Logger.getLogger(HttpServerAdapter.class.getName());
@@ -47,6 +49,8 @@ public final class HttpServerAdapter {
     public HttpServerAdapter mount(StaticMount m) { mounts.add(m); return this; }
 
     public void start(String host, int port) throws IOException {
+        // bound how long one request may take to arrive (slow headers or body); must be set before the JDK server loads
+        if (System.getProperty("sun.net.httpserver.maxReqTime") == null) System.setProperty("sun.net.httpserver.maxReqTime", "10");
         server = HttpServer.create(new InetSocketAddress(host, port), 256);
         server.setExecutor(Executors.newVirtualThreadPerTaskExecutor());
         server.createContext("/", this::dispatch);
@@ -59,7 +63,6 @@ public final class HttpServerAdapter {
     public int port() { return server.getAddress().getPort(); }
 
     private void dispatch(HttpExchange ex) {
-        Instant receivedAt = clock.instant();                                   // trusted ingress stamp
         String path = ex.getRequestURI().getPath();
         String method = ex.getRequestMethod();
         try {
@@ -69,7 +72,9 @@ public final class HttpServerAdapter {
                 if (!m.matches()) continue;
                 Map<String, String> params = new HashMap<>();
                 for (int i = 0; i < r.names().size(); i++) params.put(r.names().get(i), m.group(i + 1));
-                Http.Request req = new Http.Request(method, path, params, ex.getRequestHeaders(), Http.readBody(ex), receivedAt,
+                byte[] body = Http.readBody(ex);
+                Instant receivedAt = clock.instant();                           // trusted ingress stamp: the complete request is here
+                Http.Request req = new Http.Request(method, path, params, ex.getRequestHeaders(), body, receivedAt,
                         ex.getRequestURI().getRawQuery());
                 Http.Response resp;
                 try {

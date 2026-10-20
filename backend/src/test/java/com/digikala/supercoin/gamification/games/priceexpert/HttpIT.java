@@ -102,10 +102,11 @@ class HttpIT {
         return r.json().get("token").asText();
     }
 
-    static Res adminCall(String token, String method, String path, String body) throws Exception {
-        return method.equals("GET")
-                ? call("GET", A + path, null, "Authorization", "Bearer " + token)
-                : call(method, A + path, body, "Authorization", "Bearer " + token, "Idempotency-Key", UUID.randomUUID().toString());
+    static Res adminCall(String token, String method, String path, String body, String... extra) throws Exception {
+        List<String> h = new ArrayList<>(List.of("Authorization", "Bearer " + token));
+        if (!method.equals("GET")) h.addAll(List.of("Idempotency-Key", UUID.randomUUID().toString()));
+        h.addAll(List.of(extra));
+        return call(method, A + path, method.equals("GET") ? null : body, h.toArray(String[]::new));
     }
 
     /** Starts a run and opens its first question; returns [runId, questionId]. */
@@ -221,11 +222,12 @@ class HttpIT {
         int active = cfg.at("/active/version").asInt();
         JsonNode draft = adminCall(ed, "POST", "/config/versions", Json.write(Json.MAPPER.treeToValue(cfg.at("/active/config"), Object.class))).json();
         int v = draft.get("version").asInt();
+        String rev = draft.get("revision").asText();
         Res conflict = adminCall(ed, "POST", "/config/versions/" + v + "/publish",
-                "{\"version\":" + v + ",\"expected_active_version\":" + (active - 1) + ",\"reason\":\"stale\"}");
+                "{\"version\":" + v + ",\"expected_active_version\":" + (active - 1) + ",\"draft_revision\":\"" + rev + "\",\"reason\":\"stale\"}");
         assertEquals(409, conflict.status(), conflict.raw());
         assertEquals("VERSION_CONFLICT", conflict.code());
-        adminCall(ed, "POST", "/config/versions/" + v + "/discard", "{}");
+        assertEquals(200, adminCall(ed, "POST", "/config/versions/" + v + "/discard", "{}", "If-Match", rev).status());
     }
 
     @Test void t41_hiddenComparisonDataNeverLeavesTheServerDuringAQuestion() throws Exception {
@@ -306,8 +308,10 @@ class HttpIT {
             assertTrue(env.count("SELECT count(*) FROM pe_audit_event WHERE actor = 'ed'") > before, w.getKey() + " was not audited");
         }
         adminCall(ed, "POST", "/game/availability", "{\"enabled\":true,\"player_message\":null,\"reason\":\"restore\"}");
-        int draft = adminCall(ed, "GET", "/config", null).json().at("/draft/version").asInt();
-        assertEquals(200, adminCall(ed, "POST", "/config/versions/" + draft + "/discard", "{}").status());
+        JsonNode ov = adminCall(ed, "GET", "/config", null).json();
+        int draft = ov.at("/draft/version").asInt();
+        assertEquals("DRAFT_CHANGED", adminCall(ed, "POST", "/config/versions/" + draft + "/discard", "{}").code(), "discard needs the reviewed revision");
+        assertEquals(200, adminCall(ed, "POST", "/config/versions/" + draft + "/discard", "{}", "If-Match", ov.get("draft_revision").asText()).status());
         assertTrue(adminCall(ed, "GET", "/config", null).json().get("draft").isNull(), "a discarded draft is gone");
         // admin replay and mismatch
         String key = UUID.randomUUID().toString();
@@ -379,5 +383,49 @@ class HttpIT {
         assertEquals(200, replay.status(), replay.raw());
         assertEquals("true", replay.h().get("Idempotent-Replay"));
         assertEquals(422, p.post("/player/onboarding", "{\"x\":1}", key).status(), "a different body is still a mismatch");
+    }
+
+    // ------------------------------------------------------------------------------------------------ review of b023340, #20 and #21
+
+    @Test void strictJsonRejectsCoercionAliasesAndNulls() throws Exception {
+        Player p = player();
+        String[] rq = openQuestion(p);
+        String path = "/questions/" + rq[1] + "/answer";
+        assertEquals(422, p.post(path, "{\"choice\":\"higher\",\"choice_\":\"lower\"}").status(), "two spellings of one field");
+        assertEquals(422, p.post(path, "{\"Choice\":\"higher\"}").status());
+        assertEquals(422, p.post(path, "null").status(), "a null body");
+        assertEquals(422, p.post(path, "[]").status(), "not an object");
+        assertEquals(0, env.count("SELECT count(*) FROM pe_question WHERE question_id = ? AND received_at IS NOT NULL", rq[1]), "nothing was recorded");
+        String ed = admin("ed", "ed-pass-123");
+        JsonNode cfg = adminCall(ed, "GET", "/config", null).json().at("/active/config");
+        String json = Json.write(Json.MAPPER.treeToValue(cfg, Object.class));
+        assertEquals(422, adminCall(ed, "POST", "/config/versions", json.replaceFirst("\"min_bp\":(\\d+)", "\"min_bp\":$1.9")).status(), "300.9 is not an integer");
+        assertEquals(422, adminCall(ed, "POST", "/config/versions", json.replaceFirst("\"plays_per_day\":(\\d+)", "\"plays_per_day\":\"$1\"")).status(), "\"3\" is not a number");
+        assertEquals(422, adminCall(ed, "POST", "/config/versions", json.replaceFirst("\"checkpoints\":\\[", "\"checkpoints\":[null,")).status(), "null array element");
+        assertTrue(adminCall(ed, "GET", "/config", null).json().get("draft").isNull(), "no draft was saved");
+    }
+
+    @Test void answerTimeIsStampedWhenTheWholeBodyHasArrived() throws Exception {
+        Player p = player();
+        String[] rq = openQuestion(p);
+        java.time.Instant accept = java.time.Instant.parse(p.get("/runs/" + rq[0]).json().at("/question/accept_deadline").asText());
+        env.clock.set(accept.minusMillis(500));                         // headers arrive before the cutoff
+        byte[] body = "{\"choice\":\"higher\"}".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        URI u = URI.create(base);
+        try (java.net.Socket s = new java.net.Socket(u.getHost(), u.getPort())) {
+            var out = s.getOutputStream();
+            out.write(("POST " + P + "/questions/" + rq[1] + "/answer HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer " + p.token() + "\r\nX-Device-Id: " + p.device()
+                    + "\r\nIdempotency-Key: " + UUID.randomUUID() + "\r\nContent-Type: application/json\r\nContent-Length: " + body.length + "\r\nConnection: close\r\n\r\n")
+                    .getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            out.write(body, 0, 5);
+            out.flush();
+            Thread.sleep(300);
+            env.clock.set(accept.plusMillis(700));                      // the rest of the choice arrives after the cutoff
+            out.write(body, 5, body.length - 5);
+            out.flush();
+            String resp = new String(s.getInputStream().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+            assertTrue(resp.startsWith("HTTP/1.1 409"), resp);
+            assertTrue(resp.contains("QUESTION_EXPIRED"), "a choice completed after the cutoff is late: " + resp);
+        }
     }
 }

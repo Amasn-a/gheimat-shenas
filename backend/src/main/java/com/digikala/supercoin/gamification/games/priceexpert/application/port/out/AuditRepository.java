@@ -11,5 +11,6 @@ public interface AuditRepository {
     void append(String actor, String role, String action, String target, String beforeJson, String afterJson,
                 String reason, String correlationId, Instant at);
 
-    List<AuditEvent> list(String area, String actor, Instant from, Instant to, int limit, long beforeId);
+    /** {@code changesOnly} leaves out read-access and draft-save events (filtered before the page is cut). */
+    List<AuditEvent> list(String area, String actor, boolean changesOnly, Instant from, Instant to, int limit, long beforeId);
 }

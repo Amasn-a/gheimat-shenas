@@ -67,7 +67,7 @@ public final class DeadlineService {
         return false;
     }
 
-    /** Sweeper: applies due transitions to runs whose next deadline has passed. Skips rows locked by a live request. */
+    /** Sweeper: applies due transitions to runs whose next deadline has passed. Skips players and runs locked by a live request. */
     public int sweep(int limit) {
         java.util.List<String> ids = ctx.tx().inTransaction(() -> ctx.runs().dueRunIds(ctx.now(), limit));
         for (String id : ids) {
@@ -76,8 +76,11 @@ public final class DeadlineService {
                     Instant now = ctx.now();
                     Optional<Run> peek = ctx.runs().findRun(id);
                     if (peek.isEmpty() || peek.get().isFinished()) return;
-                    Player p = ctx.players().lockOrCreatePlayer(peek.get().userId, now);
-                    ctx.runs().tryLockRun(id).ifPresent(run -> applyDue(run, p, now));
+                    // never wait behind a busy player: the request holding the lock applies due transitions itself, and
+                    // the next sweep retries; one slow player cannot stall everyone else's deadlines (lock order kept)
+                    Optional<Player> p = ctx.players().tryLockPlayer(peek.get().userId);
+                    if (p.isEmpty()) return;
+                    ctx.runs().tryLockRun(id).ifPresent(run -> applyDue(run, p.get(), now));
                 });
             } catch (RuntimeException e) {
                 java.util.logging.Logger.getLogger(DeadlineService.class.getName()).warning("sweep of run " + id + " failed: " + e);

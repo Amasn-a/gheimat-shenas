@@ -35,7 +35,7 @@ public final class AdminApi {
     private static final Duration SESSION_TTL = Duration.ofHours(8);
 
     public record SignIn(String username, String password) {}
-    public record PublishBody(int version, int expectedActiveVersion, String reason) {}
+    public record PublishBody(int version, int expectedActiveVersion, String draftRevision, String reason) {}
     public record AvailabilityBody(boolean enabled, String playerMessage, String reason) {}
     public record ReviewBody(String userId, String runId, String outcome, String note) {}
     public record BlockBody(String reason, String reviewReference) {}
@@ -67,12 +67,13 @@ public final class AdminApi {
                 route("DELETE", PREFIX + "/session", r -> { String t = token(r); tx.run(() -> repo.deleteSession(hash(t))); return Http.Response.ok(Map.of("ok", true)); }),
                 route("GET", PREFIX + "/me", r -> { Admin a = admin(r); return Http.Response.ok(Map.of("username", a.username(), "role", a.role().name())); }),
                 route("GET", PREFIX + "/config", r -> Http.Response.ok(admin.config(admin(r)))),
-                route("POST", PREFIX + "/config/versions", r -> write(r, a -> Http.Response.ok(admin.saveDraft(a, r.json(GameConfig.class))))),
-                route("POST", PREFIX + "/config/versions/{v}/discard", r -> write(r, a -> { admin.discardDraft(a, version(r)); return Http.Response.ok(Map.of("ok", true)); })),
+                // If-Match carries the revision of the draft the editor loaded (absent when there was none): see AdminService.saveDraft
+                route("POST", PREFIX + "/config/versions", r -> write(r, a -> Http.Response.ok(admin.saveDraft(a, r.json(GameConfig.class), r.header("If-Match"))))),
+                route("POST", PREFIX + "/config/versions/{v}/discard", r -> write(r, a -> { admin.discardDraft(a, version(r), r.header("If-Match")); return Http.Response.ok(Map.of("ok", true)); })),
                 route("POST", PREFIX + "/config/versions/{v}/publish", r -> write(r, a -> {
                     PublishBody b = r.json(PublishBody.class);
                     if (b.version() != version(r)) throw GameException.validation("version mismatch", Map.of());
-                    return Http.Response.ok(admin.publish(a, b.version(), b.expectedActiveVersion(), b.reason()));
+                    return Http.Response.ok(admin.publish(a, b.version(), b.expectedActiveVersion(), b.draftRevision(), b.reason()));
                 })),
                 route("POST", PREFIX + "/difficulty/pair-counts", r -> Http.Response.ok(admin.bandPairCounts(admin(r), r.json(BandsBody.class).bands()))),
                 route("POST", PREFIX + "/game/availability", r -> write(r, a -> {
@@ -82,6 +83,8 @@ public final class AdminApi {
                 route("GET", PREFIX + "/runs", r -> Http.Response.ok(admin.runs(admin(r), r.queryParam("user_id"), r.queryParam("run_id")))),
                 route("GET", PREFIX + "/operations", r -> Http.Response.ok(admin.operations(admin(r), r.queryParam("user_id"), r.queryParam("run_id"), r.queryParam("status")))),
                 route("POST", PREFIX + "/operations/{id}/retry", r -> write(r, a -> Http.Response.ok(admin.retryOperation(a, r.param("id"), r.json(ReasonBody.class).reason())))),
+                route("GET", PREFIX + "/entitlements/review", r -> Http.Response.ok(admin.entitlementsNeedingReview(admin(r)))),
+                route("POST", PREFIX + "/entitlements/{id}/retry", r -> write(r, a -> Http.Response.ok(admin.retryEntitlement(a, r.param("id"), r.json(ReasonBody.class).reason())))),
                 route("GET", PREFIX + "/players/{user}", r -> Http.Response.ok(admin.player(admin(r), r.param("user")))),
                 route("POST", PREFIX + "/players/{user}/block", r -> write(r, a -> {
                     BlockBody b = r.json(BlockBody.class);
@@ -97,7 +100,7 @@ public final class AdminApi {
                 route("GET", PREFIX + "/audit", r -> {
                     Admin a = admin(r);
                     String from = r.queryParam("from"), to = r.queryParam("to"), before = r.queryParam("before_id");
-                    return Http.Response.ok(admin.audit(a, blank(r.queryParam("area")), blank(r.queryParam("actor")),
+                    return Http.Response.ok(admin.audit(a, blank(r.queryParam("area")), blank(r.queryParam("actor")), "1".equals(r.queryParam("changes_only")),
                             from == null || from.isBlank() ? null : Instant.parse(from), to == null || to.isBlank() ? null : Instant.parse(to),
                             before == null || before.isBlank() ? 0 : Long.parseLong(before)));
                 }),

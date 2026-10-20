@@ -40,17 +40,22 @@ export async function request(method, path, o = {}) {
     const headers = { Authorization: auth, 'X-Device-Id': host.deviceId(), Accept: 'application/json' };
     if (method === 'POST') { headers['Content-Type'] = 'application/json'; headers['Idempotency-Key'] = o.key || uuid(); }
     const sent = performance.now();
-    let res;
+    let res, body = null, text;
     try {
       res = await fetch(BASE + path, { method, headers, body: method === 'POST' ? JSON.stringify(o.body || {}) : undefined, signal: ctl.signal, cache: 'no-store', credentials: 'omit' });
+      text = await res.text();                                   // the deadline covers the body too, not only the headers
     } catch (e) {
       throw new ApiError(0, ctl.signal.aborted ? 'TIMEOUT' : 'NETWORK');   // an aborted request may still have been committed: retry with the same key
     } finally { clearTimeout(t); }
-    let body = {};
-    try { body = await res.json(); } catch (e) { body = {}; }
-    if (body && body.server_time) clock.observe(body.server_time, sent, performance.now());
-    else if (body && body.state && body.state.server_time) clock.observe(body.state.server_time, sent, performance.now());
-    if (!res.ok) throw new ApiError(res.status, body && body.code, body);
+    try { body = text ? JSON.parse(text) : null; } catch (e) { body = null; }
+    if (res.ok && (!body || typeof body !== 'object')) throw new ApiError(0, 'BAD_RESPONSE');   // malformed success: recover like a lost response
+    body = body || {};
+    // a replayed response (Idempotent-Replay) carries its original server_time: never a clock sample
+    if (res.headers.get('Idempotent-Replay') !== 'true') {
+      if (body.server_time) clock.observe(body.server_time, sent, performance.now());
+      else if (body.state && body.state.server_time) clock.observe(body.state.server_time, sent, performance.now());
+    }
+    if (!res.ok) throw new ApiError(res.status, body.code, body);
     return camel(body);
   };
   try { return await once(false); }

@@ -46,8 +46,8 @@ async def sign_in(pg, user, pw):
     await pg.wait_for_selector(".qa-card .qa-field")
 
 
-def admin_api(method, path, body=None, token=None):
-    h = {"Content-Type": "application/json", "Idempotency-Key": str(uuid.uuid4())}
+def admin_api(method, path, body=None, token=None, extra=None):
+    h = {"Content-Type": "application/json", "Idempotency-Key": str(uuid.uuid4()), **(extra or {})}
     if token: h["Authorization"] = "Bearer " + token
     req = urllib.request.Request(BASE + "/admin/v1/gamification/price-expert" + path, method=method,
                                  data=None if body is None else json.dumps(body).encode(), headers=h)
@@ -56,8 +56,8 @@ def admin_api(method, path, body=None, token=None):
 
 def discard_leftover_draft():
     t = admin_api("POST", "/session", {"username": "editor", "password": "editor-dev-password"})["token"]
-    d = admin_api("GET", "/config", token=t)["draft"]
-    if d: admin_api("POST", f"/config/versions/{d['version']}/discard", {}, t)
+    ov = admin_api("GET", "/config", token=t)
+    if ov["draft"]: admin_api("POST", f"/config/versions/{ov['draft']['version']}/discard", {}, t, {"If-Match": ov["draft_revision"]})
 
 
 async def main():

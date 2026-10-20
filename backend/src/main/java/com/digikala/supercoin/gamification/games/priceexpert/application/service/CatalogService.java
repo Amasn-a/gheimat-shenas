@@ -21,8 +21,20 @@ public final class CatalogService {
     public record ImportReport(int version, int products, int eligible, int rejectedRows, List<String> problems) {}
 
     public ImportReport importAndPublish(List<ImportRow> rows, String source, String actor) {
+        return importAndPublish(rows, source, actor, false);
+    }
+
+    /** Start-up seeding: publishes only if no catalog is active yet, decided under the lock (several instances may start). */
+    public ImportReport importIfNoneActive(List<ImportRow> rows, String source, String actor) {
+        return importAndPublish(rows, source, actor, true);
+    }
+
+    private ImportReport importAndPublish(List<ImportRow> rows, String source, String actor, boolean onlyIfNone) {
         return ctx.tx().inTransaction(() -> {
             Instant now = ctx.now();
+            // Version allocation and publication are serialised by the settings lock, taken first (review b023340 #25).
+            var s = ctx.configs().lockSettings();
+            if (onlyIfNone && s.activeCatalogVersion() != null) return null;
             List<String> problems = new ArrayList<>();
             List<ImportRow> clean = new ArrayList<>();
             Set<Long> seen = new HashSet<>();
@@ -50,7 +62,6 @@ public final class CatalogService {
             ctx.catalog().insertVersion(version, source, clean.size(), eligible, now);
             ctx.catalog().insertProducts(version, clean);
             ctx.catalog().markPublished(version, now);
-            var s = ctx.configs().lockSettings();
             ctx.configs().saveSettings(new com.digikala.supercoin.gamification.games.priceexpert.application.port.out.ConfigRepository.Settings(
                     s.activeConfigVersion(), version, s.gameEnabled(), s.playerMessage(), s.revision() + 1, actor, now));
             ctx.audit().append(actor, "SYSTEM", "catalog.publish", "catalog:" + version, null,

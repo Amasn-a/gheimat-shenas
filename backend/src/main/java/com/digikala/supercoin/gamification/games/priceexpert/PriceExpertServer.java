@@ -74,7 +74,8 @@ public final class PriceExpertServer {
         String file = env.get("PE_CATALOG_JSON");
         if (file == null) { LOG.warning("no catalog published and PE_CATALOG_JSON not set: the game is unavailable until a catalog is imported"); return; }
         String media = env.get("PE_MEDIA_PREFIX");                        // e.g. /media/ in development, null = CDN URLs
-        var report = module.catalog.importAndPublish(ProductDatabaseReader.read(Path.of(file), media), "product-database:" + Path.of(file).getFileName(), "system:seed");
+        var report = module.catalog.importIfNoneActive(ProductDatabaseReader.read(Path.of(file), media), "product-database:" + Path.of(file).getFileName(), "system:seed");
+        if (report == null) { LOG.info("catalog already published by another instance"); return; }
         LOG.info("catalog v" + report.version() + " published: " + report.products() + " products, " + report.eligible() + " eligible, "
                 + report.rejectedRows() + " rejected");
     }
@@ -96,6 +97,7 @@ public final class PriceExpertServer {
     public void stop() {
         workers.stop();
         http.stop();
+        if (module.ctx.coin() instanceof com.digikala.supercoin.gamification.games.priceexpert.infrastructure.coin.TimeLimitedCoinGateway t) t.close();
         dataSource.close();
     }
 

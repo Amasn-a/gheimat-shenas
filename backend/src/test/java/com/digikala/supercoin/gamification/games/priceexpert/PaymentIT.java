@@ -316,6 +316,7 @@ class PaymentIT {
         OperationView nop = env.m.runs.continueOffer(n.c(), na.offer().offerId(), env.clock.instant());
         int cat = ((Number) env.scalar("SELECT catalog_version FROM pe_run WHERE run_id = ?", n.runId())).intValue();
         env.sql("UPDATE pe_catalog_product SET eligible = FALSE, exclude_reason = 'test: exhausted' WHERE catalog_version = ? AND dkp NOT IN (SELECT reference_dkp FROM pe_run WHERE run_id = ?)", cat, n.runId());
+        env.rebuild();                    // a published version never changes in production; a fresh process re-reads the edited one
         try {
             env.clock.advance(1_000);
             env.drainLedger();
@@ -323,6 +324,7 @@ class PaymentIT {
             assertEquals(0, netCharge(n.user()));
         } finally {
             env.sql("UPDATE pe_catalog_product SET eligible = TRUE, exclude_reason = NULL WHERE catalog_version = ? AND exclude_reason = 'test: exhausted'", cat);
+            env.rebuild();
         }
         assertEquals(1, env.count("SELECT count(*) FROM pe_coin_operation WHERE related_operation_id = ? AND type = 'REFUND'", nop.operationId()));
     }

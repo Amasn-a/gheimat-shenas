@@ -34,6 +34,13 @@ public final class CampaignService {
             Optional<Entitlement> e = ctx.campaigns().lockEntitlement(id);
             if (e.isEmpty() || !"PENDING".equals(e.get().status()) || e.get().nextAttemptAt().isAfter(now)) return Optional.<Entitlement>empty();
             Entitlement x = e.get();
+            if (x.attempts() >= MAX_ATTEMPTS) {                                // ceiling holds whatever the provider did (throws, hangs)
+                ctx.campaigns().updateEntitlement(new Entitlement(x.entitlementId(), x.campaignId(), x.userId(), x.runId(), "NEEDS_REVIEW",
+                        x.amountToman(), null, null, x.providerRef(), x.attempts(), null, x.lastError() == null ? "retry limit reached" : x.lastError(),
+                        x.createdAt(), null));
+                ctx.ledger().alert("CAMPAIGN_CODE_NEEDS_REVIEW", "code:" + x.entitlementId(), "{\"entitlement_id\":\"" + x.entitlementId() + "\"}", now);
+                return Optional.<Entitlement>empty();
+            }
             Entitlement leased = new Entitlement(x.entitlementId(), x.campaignId(), x.userId(), x.runId(), x.status(), x.amountToman(),
                     x.codeCiphertext(), x.expiresAt(), x.providerRef(), x.attempts() + 1, now.plusSeconds(20), x.lastError(), x.createdAt(), x.issuedAt());
             ctx.campaigns().updateEntitlement(leased);
@@ -42,17 +49,23 @@ public final class CampaignService {
         if (claimed.isEmpty()) return;
         Entitlement e = claimed.get();
         Campaign c = ctx.tx().inTransaction(() -> ctx.campaigns().find(e.campaignId()).orElseThrow());
-        CampaignCodeProvider.Result r = ctx.codes().issue(e.entitlementId(), e.userId(), e.campaignId(), e.amountToman(), c.validityDays());
+        CampaignCodeProvider.Result r;
+        try {
+            r = ctx.codes().issue(e.entitlementId(), e.userId(), e.campaignId(), e.amountToman(), c.validityDays());
+        } catch (RuntimeException ex) {                                        // an exception is an unknown outcome, recorded like one
+            r = new CampaignCodeProvider.Unknown("provider error: " + ex.getClass().getSimpleName());
+        }
+        CampaignCodeProvider.Result outcome = r;
         ctx.tx().run(() -> {
             Instant now = ctx.now();
             Entitlement cur = ctx.campaigns().lockEntitlement(id).orElseThrow();
             if (!"PENDING".equals(cur.status())) return;
             Entitlement next;
-            if (r instanceof CampaignCodeProvider.Issued i) {
+            if (outcome instanceof CampaignCodeProvider.Issued i) {
                 next = new Entitlement(cur.entitlementId(), cur.campaignId(), cur.userId(), cur.runId(), "ISSUED", cur.amountToman(),
                         ctx.cipher().encrypt(i.code()), i.expiresAt(), i.providerRef(), cur.attempts(), null, null, cur.createdAt(), now);
             } else {
-                String err = r instanceof CampaignCodeProvider.Failed f ? f.error() : ((CampaignCodeProvider.Unknown) r).error();
+                String err = outcome instanceof CampaignCodeProvider.Failed f ? f.error() : ((CampaignCodeProvider.Unknown) outcome).error();
                 boolean giveUp = cur.attempts() >= MAX_ATTEMPTS;
                 next = new Entitlement(cur.entitlementId(), cur.campaignId(), cur.userId(), cur.runId(), giveUp ? "NEEDS_REVIEW" : "PENDING",
                         cur.amountToman(), null, null, cur.providerRef(), cur.attempts(), giveUp ? null : now.plus(PaymentService.backoff(cur.attempts())),

@@ -351,9 +351,9 @@ class RunLifecycleIT {
         cps.set(0, new GameConfig.Checkpoint("cp_3", 3, "قیمت‌یاب تازه‌کار", "badge_3", 6, true));
         GameConfig changed = new GameConfig(base.playsPerDay(), base.inputMs(), base.acceptMs(), base.offerMs(), base.inactivityMs(), base.offerActivationMs(),
                 base.timeoutGraceMs(), base.checkpointAutoContinueMs(), cps, base.continueRule(), base.streakReward(), base.bands(), null, null, base.features());
-        var draft = env.m.admin.saveDraft(admin, changed);
+        var draft = env.m.admin.saveDraft(admin, changed, null);
         assertTrue(draft.errors().isEmpty());
-        env.m.admin.publish(admin, draft.version(), cfgV, "test");
+        env.m.admin.publish(admin, draft.version(), cfgV, draft.revision(), "test");
         try {
             env.m.catalog.importAndPublish(com.digikala.supercoin.gamification.games.priceexpert.infrastructure.config.ProductDatabaseReader.read(TestEnv.CATALOG, null), "test-2", "test");
             for (int i = 0; i < 3; i++) answer(c, reveal(c, s.run().runId()), true, 1000);
@@ -371,8 +371,8 @@ class RunLifecycleIT {
             assertEquals(catV + 1, s2.run().runConfig().catalogVersion());
             env.m.runs.leave(c, s2.run().runId());
         } finally {
-            var back = env.m.admin.saveDraft(admin, LaunchConfig.value());
-            env.m.admin.publish(admin, back.version(), draft.version(), "restore");
+            var back = env.m.admin.saveDraft(admin, LaunchConfig.value(), null);
+            env.m.admin.publish(admin, back.version(), draft.version(), back.revision(), "restore");
         }
     }
 }

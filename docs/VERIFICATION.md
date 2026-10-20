@@ -1,3 +1,14 @@
+# Verification log — 2026-10-20 (second round: strict review of b023340)
+
+Same environment kind as below. Run and passed here unless stated otherwise.
+
+- **Backend:** 81 tests, 0 failures, three consecutive fresh runs: DomainRulesTest 8, RunLifecycleIT 20, SelectionIT 3, SelectionConsistencyIT 4, PaymentIT 14, RewardsIT 12, HttpIT 11, ReviewFixesIT 7, TimeLimitedCoinGatewayTest 2.
+- **New client lifecycle driver** `qa/lifecycle.py`: all 8 checks pass on this branch; the 7 checks for findings 4, 10, 11, 12, 13, 28 and 29 were also run against the b023340 player and **all 7 failed there** (reveal blocked, stale products list shown over the new run, clock moved −3,018 ms on a replay, stalled body never timed out, second miss replayed the first offer, copy shown as copied after a denied clipboard, countdown static).
+- **QA drivers:** `qa/flow.py` (light and dark), `qa/states.py` 13/13, `qa/admin_flow.py` 21 screens — no page errors. `qa/flow.py`'s early-tap check now taps before taking the screenshot (a slow screenshot had pushed the tap past the 1.2 s guard).
+- **Admin probes (scratch):** a save whose response is lost is reconciled without a false "another editor" conflict; history shows "3 → 5" after version 4 was discarded.
+- **Independent review** of the diff by a second agent: its six remarks were applied (share button reset, lost save response, quota retry, fallback cost and randomness, poll continuation, copy reset).
+- **Not done:** Maven Central/wrapper build path (blocked here), real WebViews, sustained load, PostgreSQL process-kill tests.
+
 # Verification log — 2026-10-20 (fixes for the review of 716d889)
 
 Same kind of environment as below (cloud Linux container, PostgreSQL 16, Java 21, headless Chromium at 375×812). Run and passed here unless stated otherwise.

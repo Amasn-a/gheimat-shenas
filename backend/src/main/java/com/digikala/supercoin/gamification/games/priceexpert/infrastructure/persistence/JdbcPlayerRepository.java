@@ -19,6 +19,10 @@ public final class JdbcPlayerRepository implements PlayerRepository {
         return one("SELECT * FROM pe_player WHERE user_id = ? FOR UPDATE", JdbcPlayerRepository::player, userId).orElseThrow();
     }
 
+    @Override public Optional<Player> tryLockPlayer(String userId) {
+        return one("SELECT * FROM pe_player WHERE user_id = ? FOR UPDATE SKIP LOCKED", JdbcPlayerRepository::player, userId);
+    }
+
     @Override public Optional<Player> findPlayer(String userId) {
         return one("SELECT * FROM pe_player WHERE user_id = ?", JdbcPlayerRepository::player, userId);
     }

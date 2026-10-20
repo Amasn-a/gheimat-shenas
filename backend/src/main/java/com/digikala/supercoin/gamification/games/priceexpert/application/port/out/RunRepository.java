@@ -24,6 +24,8 @@ public interface RunRepository {
     void insertRun(Run run);
     void updateRun(Run run);
     List<String> dueRunIds(Instant now, int limit);
+    /** Active (not finished) run ids after {@code afterRunId} in id order: keyset pages over every active run. */
+    List<String> activeRunIds(String afterRunId, int limit);
 
     void insertQuestion(Question q);
     Optional<Question> findQuestion(String questionId);

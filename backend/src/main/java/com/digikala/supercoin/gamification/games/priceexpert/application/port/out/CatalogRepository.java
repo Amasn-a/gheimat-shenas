@@ -28,8 +28,10 @@ public interface CatalogRepository {
     List<Candidate> candidates(int catalogVersion, PriceRange range, Collection<Long> excludeDkps,
                                String userId, LocalDate showDate, int limit);
 
-    /** True when at least one eligible product lies in any of the ranges, excluding the given dkps (look-ahead). */
-    boolean anyIn(int catalogVersion, List<PriceRange> ranges, Collection<Long> excludeDkps);
+    /** Every eligible product of the version as (dkp, price), ordered by price. A published version never changes. */
+    List<PricePoint> eligiblePrices(int catalogVersion);
+
+    record PricePoint(long dkp, long priceToman) {}
 
     /** Random eligible products for an initial reference; unseen-today first. */
     List<CatalogProduct> referenceCandidates(int catalogVersion, String userId, LocalDate showDate, int limit);

@@ -9,7 +9,7 @@
 | Admin sign-in | **Development stand-in** | Username and password with PBKDF2, server-side roles. Organisation SSO with MFA is not available here |
 | Campaign code source | **FAKE** | Codes look like `DEV-XXXX…` and are AES-encrypted at rest. The source and account-binding contract are still open. Production start-up refuses it |
 | Super App host bridge (back, close, haptics, share, deep link, theme) | **Adapter only, not wired** | `player/src/host.js` defines one adapter. `player/src/host-boot.js` is the production entry: the build bundles it with `host.js` and the game into one file, and it calls `configureHost({})` before loading the game. Until the integration fills that object with the real bridge, the build shows G11.AUTH_ERROR. No bridge names were invented |
-| Product catalog | **Real data, offline import** | The 1,000-product sample collected earlier from Digikala is imported. 992 rows imported (8 rejected for a zero price); 989 eligible. Live ingestion is not built: `api.digikala.com` is not reachable from this environment |
+| Product catalog | **Real data, offline import** | The 1,000-product sample collected earlier from Digikala is imported. 992 rows imported (8 rejected for a missing displayed variant id; every price is positive); 989 eligible. Live ingestion is not built: `api.digikala.com` is not reachable from this environment |
 | Product images | CDN URLs (`dkstatics-public.digikala.com`) | In development, local copies of the same images are served under `/media/` because the CDN is not reachable from the sandbox |
 | Analytics | Structured log lines (`LogEventSink`) | Event names are drafts for the analytics team. No vendor was added |
 | PostgreSQL | **Real** | All tests and QA ran against PostgreSQL 16 |
@@ -34,6 +34,9 @@
   - `offer_activation_ms` 180,000: how long an unactivated miss waits before the run ends. This reuses the inactivity value.
   - `timeout_grace_ms` 1,000: the timeout worker waits this long after the accept deadline. Since the answer receipt is now recorded before any run lock, the grace only has to cover ingress → one single-row write, so lowering it to around 300–500 ms (to shorten the ~12.3 s timeout verdict) is safer than before. Watch the `ON_TIME_ANSWER_TIMED_OUT` alert: it fires if an on-time answer still lost to a timeout, which means the grace is too short for the real latency.
 - **Payments after the offer closes:** a charge that was never sent is closed without touching the wallet. One that may have reached the provider is never sent again; it is reconciled by status query only (refunded once if it lands) and moves to NEEDS_REVIEW with an alert when the 72 h retry window ends. If DigiCoin guarantees that "not found" is final after its timeout (D06), it could be closed sooner.
+- **Selection:** a reveal first tries a random sample of 48 candidates per direction, then every candidate of the band. Look-ahead uses an in-memory price index of the pinned catalog version (the last 4 versions are cached; published versions never change).
+- **Workers:** coin operations of up to 4 players are processed at once (one player's in order). A provider gets at most 64 concurrent calls per instance; beyond that a call is answered "unknown" without being sent and reconciled later. Reading one request may take at most 10 s (`sun.net.httpserver.maxReqTime`, standalone HTTP edge only).
+- **Quota screen:** at the reset instant the player asks the server again (every 2 s, at most 5 times) instead of trusting the local countdown.
 - **Idempotency lease:** 30 s for player requests, 15 min for admin writes (game-off finishes every active run). A retry after the lease takes the key over (recovery after a crash). Rows written by an older instance without a lease age from their creation time.
 - **A01 switches:** a run follows the switches of the configuration version it started with, like every other setting. Turning the streak switch off hides the streak card, row and share line and pays no streak reward; the server still counts streak days in the background (**unresolved:** should counting pause while the switch is off?).
 - **Motion durations** (`player/src/durations.js`): correct hold 1,300 ms, miss hold 1,700, promotion 540, shrink 340, checkpoint guard 1,200.
@@ -72,6 +75,49 @@ None of these block the playable path in development. Each is isolated behind a 
 | — | The parallel test helper swallowed worker exceptions | It now fails on any worker error or a worker still running after 30 s | all concurrency tests |
 | — | The backend build depended on machine-specific Debian paths | Maven Central by default plus the Gradle wrapper; `-PofflineRepo=…` for offline machines | `./gradlew build` (team) · offline run here |
 | — | `PaymentIT.t28` compared against the database's wall clock (fails from 20 Oct 2026); `RunLifecycleIT.t15` flaked on sparse catalog paths | Due time set on the test clock; t15 retries another path like the reward tests do | full suite |
+
+## Strict review of b023340 — findings and status
+
+That review was of b023340 (716d889 plus README edits), so it did not include the fixes above. Verdict per finding:
+
+| # | Finding | Status | Fix | Covered by |
+|---|---|---|---|---|
+| 1 | Fresh debit after the offer expired | Correct; fixed earlier | see table above (#1) | `PaymentIT` |
+| 2 | On-time answer lost to late processing | Correct; fixed earlier | see table above (#2). Residual: the receipt write still needs a database connection; if the pool is exhausted for longer than the grace, the `ON_TIME_ANSWER_TIMED_OUT` alert fires | `RunLifecycleIT.t11b–d` |
+| 3 | Host adapter cannot be configured | Correct; fixed earlier | host-boot.js is the bundle entry | build audit |
+| 4 | Checkpoint due at a leave blocks the next run's reveal | Correct | one `resetRunUi()` for every run end, boot and start; checkpoint tokens invalidated | `qa/lifecycle.py checkpoint_reset` |
+| 5 | Answer recovery stops | Correct; fixed earlier | backoff never stops | browser probe |
+| 6 | Publishing a draft changed by another editor | Correct | draft revision (hash of its content) required to save over, discard or publish; `DRAFT_CHANGED` conflict; a lost save response is reconciled | `RewardsIT.anEditorCannotPublish…`, `HttpIT` |
+| 7 | Admission/offer/continue promise a question reveal rejects | Correct | one predicate `canReveal` (look-ahead included) for admission, offer activation and the paid-continue grant | `SelectionConsistencyIT` |
+| 8 | 48-candidate sample reported as exhaustion | Correct | full-band fallback before no_products; unseen and seen pools both searched | `SelectionConsistencyIT` |
+| 9 | Replacement overwrote the day's statistics | Correct | participation re-read after the replaced run is settled | `ReviewFixesIT` |
+| 10 | Stale responses replace a newer screen | Correct | ownership (generation, run, screen) checked after every await | `qa/lifecycle.py stale_products, share_busy` |
+| 11 | Replayed `server_time` moves the clock back | Correct | replays (`Idempotent-Replay`) are never clock samples | `qa/lifecycle.py replay_clock` |
+| 12 | Timeout ends before the body is read | Correct | deadline covers the body; malformed success = `BAD_RESPONSE` | `qa/lifecycle.py body_timeout` |
+| 13 | Second offer reuses the first offer's key | Correct | one activation key per missed question; copy follows the configured cap | `qa/lifecycle.py offer_per_miss` |
+| 14 | Admin switches do not control the player | Correct; fixed earlier | see table above (#5) | `RewardsIT` |
+| 15 | Idempotency not crash-recoverable | Correct; fixed earlier (lease). Not covered: a crash after the domain commit but before the response is stored re-evaluates the request; domain rules keep it single-effect | `HttpIT` |
+| 16 | Campaign overlap and edit/end races | Correct | schedule writes serialised (advisory transaction lock); edit/end re-read under it | `ReviewFixesIT` |
+| 17 | Campaign provider exceptions bypass the ceiling | Correct | exceptions are unknown outcomes; ceiling enforced at claim; admin list + audited retry (`/entitlements/review`, `/entitlements/{id}/retry`) | `ReviewFixesIT` |
+| 18 | Cap overflow | Correct; fixed earlier | exact arithmetic + validation | `DomainRulesTest` |
+| 19 | Empty price range throws | Correct | repository lists treated as immutable | `SelectionConsistencyIT` |
+| 20 | JSON coercion and key aliases | Correct | no float/string coercion, one spelling per field, objects only, no null array elements | `HttpIT.strictJson…` |
+| 21 | Answer time stamped before the body arrived | Correct | stamped when the whole body is read; request read bounded to 10 s | `HttpIT.answerTimeIsStamped…` |
+| 22 | Timed-out coin calls accumulate | Correct | bounded in-flight calls, cancel on timeout, closed on shutdown. The real adapter still needs its own connect/read deadlines | `TimeLimitedCoinGatewayTest` |
+| 23 | Sweeper blocks behind a busy player; serial payment retries | Correct | sweeper skips locked players; payment batches run per player in parallel | `ReviewFixesIT` |
+| 24 | Kill switch scans only 100,000 recent runs | Correct | keyset scan of active runs with a partial index | `ReviewFixesIT` |
+| 25 | Concurrent catalog imports collide | Correct | version allocated under the settings lock; startup seeding only if none active | `SelectionConsistencyIT` |
+| 26 | Concurrency test helper hides failures | Correct; fixed earlier. QA browser checks are now hard gates too | `TestEnv.parallel`, `qa/flow.py`, `qa/states.py` |
+| 27 | Admin history hides older changes | Correct | reads and draft saves filtered on the server before paging; "older" always reachable | admin QA |
+| 28 | Copy feedback inaccurate and not rendered | Correct | follows the clipboard result; failure message; state reaches the view | `qa/lifecycle.py copy_state` |
+| 29 | Quota countdown static, no refresh at reset | Correct | countdown ticks on every quota screen; server asked again at the reset and on return to the app | `qa/lifecycle.py quota_reset` |
+| 30 | Role change ignored by live admin sessions | Correct | sessions use the account's current role | `ReviewFixesIT` |
+| — | Reasons not required server-side | Correct | unblock, operation retry, entitlement retry and campaign end require a reason | `ReviewFixesIT` |
+| — | History shows guessed versions and the wrong message field | Correct | publish records the version it replaced; message read from the audit | admin QA |
+| — | STATUS catalog statistics | Correct | the 8 rejected rows have no displayed variant id | — |
+| — | Tracked `qa/__pycache__`, unescaped reviewer values, README intro and check order | Correct | removed and ignored; escaped; restored; commands run from the root | — |
+
+Open items from the review's project-level comments are listed under **Blockers** above and in the review response document; they need decisions or integrations, not code changes alone.
 
 ## Defects found and fixed during this phase
 

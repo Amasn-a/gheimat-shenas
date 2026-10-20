@@ -12,6 +12,8 @@ public interface PlayerRepository {
 
     Player lockOrCreatePlayer(String userId, Instant now);
     Optional<Player> findPlayer(String userId);
+    /** Like lockOrCreatePlayer for an existing player, but empty instead of waiting when another transaction holds it. */
+    Optional<Player> tryLockPlayer(String userId);
     void updatePlayer(Player p, Instant now);
     void setBlocked(String userId, boolean blocked, String actor, String reason, Instant now);
 

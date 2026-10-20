@@ -50,6 +50,9 @@ public final class TestEnv implements AutoCloseable {
 
     /** Fresh schema; catalog = the real 989-product sample unless a custom list is given. */
     public static TestEnv create(List<ImportRow> catalog) throws Exception {
+        // the schema is dropped below: only ever against a disposable database whose name says so
+        String db = URL.replaceFirst("^jdbc:postgresql://[^/]+/", "").replaceFirst("[?].*$", "");
+        if (!db.endsWith("_test")) throw new IllegalStateException("refusing to wipe database '" + db + "': test databases must end with _test");
         HikariConfig hc = new HikariConfig();
         hc.setJdbcUrl(URL);
         hc.setMaximumPoolSize(24);

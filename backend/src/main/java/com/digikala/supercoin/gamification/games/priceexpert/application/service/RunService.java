@@ -109,7 +109,9 @@ public final class RunService {
             run.readySince = now;
             run.nextDeadlineAt = now.plusMillis(cfg.inactivityMs());
             ctx.runs().insertRun(run);
-            ctx.players().saveParticipation(new Participation(part.userId(), day, part.playsUsed() + 1, part.finishedRuns(), part.streakEligible()));
+            // re-read: finishing a replaced run of the same day has just updated finished_runs / streak_eligible (review b023340 #9)
+            Participation cur = ctx.players().lockParticipation(caller.userId(), day);
+            ctx.players().saveParticipation(new Participation(cur.userId(), day, cur.playsUsed() + 1, cur.finishedRuns(), cur.streakEligible()));
             ctx.players().markSeen(caller.userId(), day, ref.dkp(), now);
 
             int playsLeft = cfg.playsPerDay() - part.playsUsed() - 1;
@@ -236,7 +238,7 @@ public final class RunService {
             if (run.state != RunState.AWAITING_OFFER) return Result.error(stateError("INVALID_STATE", run, l.player, caller));
             GameConfig cfg = ctx.config(run.configVersion);
             CatalogProduct ref = ctx.catalog().product(run.catalogVersion, run.referenceDkp).orElseThrow();
-            if (!selection.hasNextQuestion(run.catalogVersion, cfg, ref.priceToman(), run.score, ctx.runs().runProductDkps(run.runId))) {
+            if (!selection.canReveal(run.catalogVersion, cfg, ref.priceToman(), run.score, ctx.runs().runProductDkps(run.runId))) {   // never sell an offer reveal can't honour
                 deadlines.finishAfterMiss(run, l.player, NoOfferReason.no_products, now);
                 return Result.ok(activationView(run, l.player, caller, null, null));
             }

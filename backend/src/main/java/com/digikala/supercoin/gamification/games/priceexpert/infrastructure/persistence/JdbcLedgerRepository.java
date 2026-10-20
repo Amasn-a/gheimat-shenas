@@ -42,9 +42,9 @@ public final class JdbcLedgerRepository implements LedgerRepository {
             nz(o.executedAt), nz(o.confirmedAt), o.operationId);
     }
 
-    @Override public List<String> dueOperationIds(Instant now, int limit) {
-        return query("SELECT operation_id FROM pe_coin_operation WHERE status IN ('PENDING','UNKNOWN') AND next_attempt_at <= ? ORDER BY next_attempt_at LIMIT ?",
-                rs -> rs.getString(1), now, limit);
+    @Override public List<DueOperation> dueOperations(Instant now, int limit) {
+        return query("SELECT operation_id, user_id FROM pe_coin_operation WHERE status IN ('PENDING','UNKNOWN') AND next_attempt_at <= ? ORDER BY next_attempt_at LIMIT ?",
+                rs -> new DueOperation(rs.getString(1), rs.getString(2)), now, limit);
     }
 
     @Override public List<CoinOperation> operationsOfRun(String runId) {

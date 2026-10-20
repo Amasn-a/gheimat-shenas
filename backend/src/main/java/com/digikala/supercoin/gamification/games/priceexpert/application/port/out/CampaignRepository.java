@@ -19,6 +19,11 @@ public interface CampaignRepository {
     /** One conditional update: codes_issued + 1 and budget_used + amount, only within code cap and budget (R-48). */
     boolean reserveCode(String campaignId, long amountToman);
     boolean overlaps(Instant startsAt, Instant endsAt, String exceptCampaignId);
+    /** Serialises campaign schedule writes (create, edit, end) until the transaction ends: overlap checks and status
+     *  transitions then read a schedule nobody else is changing. */
+    void lockSchedule();
+    /** Entitlements whose code issue exhausted its retries. */
+    List<Entitlement> entitlementsNeedingReview(int limit);
 
     Optional<Entitlement> entitlement(String campaignId, String userId);
     Optional<Entitlement> entitlementOfRun(String runId);

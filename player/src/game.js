@@ -29,6 +29,15 @@ export const S = {
 let root = null;
 const now = () => performance.now();
 function later(ms, fn) { const g = S.gen; return setTimeout(() => { if (g === S.gen) fn(); }, ms); }
+/**
+ * Per-run transient UI. Cleared in one place whenever a run ends, is replaced, or a new one starts or boots, so no
+ * flag outlives its run (a checkpoint due at a leave once blocked every reveal of the next run).
+ */
+function resetRunUi() {
+  Object.assign(S.ui, { leave: false, cp: null, cpDue: null, cpAt: 0, cpAutoStarted: false, queued: null, resuming: false,
+    afterContinue: false, noOffer: null, guardUntil: 0, offerEnded: false, shareBusy: false });
+  cpToken++;                                                     // an open or pending checkpoint of the old run can no longer close or open
+}
 const cfg = () => (S.run && S.run.runConfig) || (S.boot && S.boot.config) || { checkpoints: [], continueRule: { enabled: false, cost: 0, cap: 0 }, inputMs: 10500, acceptMs: 11000, offerMs: 10000, checkpointAutoContinueMs: 5000 };
 const inRun = v => /^G03\.|^G04\.|^G05\.|^G06\./.test(v);
 /** A01 switch of the run's (or, before a run, the active) configuration; on when an older server sends none. */
@@ -41,7 +50,8 @@ function model() {
   return {
     boot: S.boot, toast: S.ui.toast, config: c, playsPerDay: S.boot ? S.boot.quota.playsPerDay : 3, helpFirst: S.ui.help === 'FIRST',
     untilReset: S.boot ? clock.ms(S.boot.quota.resetsAt) - clock.serverNow() : 0,
-    result: S.result, products: S.products, lossGuided: S.ui.lossGuided, shareBusy: S.ui.shareBusy, ended: S.ended,
+    result: S.result ? { ...S.result, codeState: S.ui.codeState } : null,   // carries the copy state the view renders
+    products: S.products, lossGuided: S.ui.lossGuided, shareBusy: S.ui.shareBusy, ended: S.ended,
     lastScore: S.ended ? S.ended.score : 0, playerMessage: S.boot && S.boot.access ? S.boot.access.message : null,
     shareSheet: '', score: r ? r.score : 0, checkpoint: r ? r.highestCheckpoint : null, leave: S.ui.leave,
     questionOpen: ['G03.QUESTION_ACTIVE', 'G03.ANSWER_PENDING'].includes(S.view),
@@ -123,7 +133,8 @@ function feedback(m) {
   if (!S.fb) return ready(m);
   const [t, tr, mm, d, dim] = fbParts();
   const bal = S.balance == null ? '…' : fa(S.balance), C = fa(S.offer ? S.offer.cost : c.continueRule.cost);
-  const ONCE = '<p class="v3-once">فقط یک بار در هر دست.</p>';   // CP-23
+  const cap = c.continueRule.cap, left = Math.max(0, cap - (S.run.continuesUsed || 0));   // CP-23 from the run's pinned rule
+  const ONCE = `<p class="v3-once">${cap === 1 ? 'فقط یک بار در هر دست.' : `${fa(left)} فرصت از ${fa(cap)} فرصت این دست باقی مونده.`}</p>`;
   const ringHTML = () => S.offer ? V.ring(Math.max(0, clock.ms(S.offer.deadline) - clock.serverNow()), c.offerMs) : '';
   const txt = () => V.offerText(S.fb.revealedPrice, S.run.score, S.run.highestCheckpoint);
   let sh = '';
@@ -169,6 +180,7 @@ export function render() {
   wireImages();
   if (S.view === 'G08.LIST' && S.products && S.products.lossProductId && !S.ui.lossGuided) { S.ui.lossGuided = true; requestAnimationFrame(guideToLoss); }
   if (before) motion.morph(root, before, ms, () => { const q = S.ui.queued; S.ui.queued = null; if (q === 'reveal') setTimeout(reveal, 0); });
+  if (root.querySelector('[data-countdown]')) tickLoop();       // any screen with a quota countdown keeps it ticking
   if (S.ui.cp && S.ui.cpAutoStarted) { const bar = root.querySelector('[data-cpauto]'); if (bar) { bar.style.transition = 'none'; bar.style.transform = `scaleX(${Math.min(1, (now() - S.ui.cpAutoStartedAt) / cfg().checkpointAutoContinueMs)})`; requestAnimationFrame(() => { bar.style.transition = `transform ${Math.max(0, cfg().checkpointAutoContinueMs - (now() - S.ui.cpAutoStartedAt))}ms linear`; bar.style.transform = 'scaleX(1)'; }); } }
 }
 
@@ -238,7 +250,8 @@ const endedFrom = st => st ? { score: st.score, checkpoint: st.highestCheckpoint
 export async function boot() {
   S.gen++; motion.end();
   Object.assign(S, { run: null, ref: null, q: null, fb: null, offer: null, op: null, result: null, products: null, share: null, keys: {} });
-  S.ui = { ...S.ui, toast: null, leave: false, cp: null, queued: null, resuming: false, lossGuided: false, shareBusy: false, codeState: null, afterContinue: false, noOffer: null };
+  resetRunUi();
+  Object.assign(S.ui, { toast: null, lossGuided: false, shareBusy: false, codeState: null });
   host.setBackHandler(null);
   go('G01.LOADING');
   try {
@@ -277,7 +290,7 @@ export async function startRun() {
     S.keys.start = null;
     S.gen++;
     S.result = null; S.products = null; S.share = null; S.ended = null;
-    S.ui.lossGuided = false; S.ui.afterContinue = false; S.ui.noOffer = null;
+    resetRunUi(); S.ui.lossGuided = false;
     S.run = st.run; S.ref = st.run.reference;
     host.setBackHandler(onBack);
     go('G03.READY');
@@ -295,8 +308,9 @@ export async function startRun() {
 
 export async function resume(runId) {
   go('G10.RESUMING');
-  try { const run = await api.run(runId); host.setBackHandler(onBack); applyRun(run, 'resume'); }
-  catch (e) { handleError(e); }
+  const g = S.gen;
+  try { const run = await api.run(runId); if (g !== S.gen) return; host.setBackHandler(onBack); applyRun(run, 'resume'); }
+  catch (e) { if (g === S.gen) handleError(e); }
 }
 
 /** Rebuilds the view from an authoritative run view (resume, reconnect, any 409 with state). Deadlines never restart. */
@@ -463,12 +477,13 @@ function afterFeedback(run) {
 
 async function activateOffer() {
   if (!S.run) return;
-  const runId = S.run.runId, key = S.keys['offer:' + runId] ||= newKey(), g = S.gen;
+  const runId = S.run.runId, intent = 'offer:' + runId + ':' + (S.run.lastResult ? S.run.lastResult.questionId : ''), key = S.keys[intent] ||= newKey(), g = S.gen;
   try {
     let act;
     try { act = await api.activateOffer(runId, key); }
     catch (e) { if (e instanceof ApiError && e.network) act = await api.activateOffer(runId, key); else throw e; }
     if (g !== S.gen) return;
+    delete S.keys[intent];                                      // answered: this miss's activation is done
     S.run = act.run;
     if (act.balance != null) S.balance = act.balance;
     if (act.offer && (act.run.state === 'OFFER_OPEN' || act.run.state === 'PAYMENT_PENDING')) { S.offer = act.offer; go('G05.OFFER'); return tickLoop(); }
@@ -534,8 +549,9 @@ async function pollOperation() {   // 1 s backing off to 5 s; G06.UNKNOWN after 
       if (g !== S.gen || !S.op) return;
       if (S.view === 'G06.PENDING' && now() - S.op.since > 5000) go('G06.UNKNOWN');
       if (!S.op.operationId) { await reconcileRun(); continue; }
-      try { onOperation(await api.operation(S.op.operationId), true); }   // the loop continues while still pending
-      catch (e) { if (!(e instanceof ApiError) || !e.network) return handleError(e); }
+      const opId = S.op.operationId;
+      try { const o = await api.operation(opId); if (g !== S.gen || !S.op) return; if (S.op.operationId !== opId) continue; onOperation(o, true); }   // the loop continues while still pending
+      catch (e) { if (g !== S.gen) return; if (!(e instanceof ApiError) || !e.network) return handleError(e); }
     }
   } finally { S.ui.polling = false; }
 }
@@ -553,7 +569,9 @@ async function watchRefund(operationId) {
 
 async function reconcileRun() {
   if (!S.run) return;
-  try { const run = await api.run(S.run.runId); applyRun(run); } catch (e) { if (!(e instanceof ApiError) || !e.network) handleError(e); }
+  const g = S.gen, runId = S.run.runId;
+  try { const run = await api.run(runId); if (g === S.gen && S.run && S.run.runId === runId) applyRun(run); }
+  catch (e) { if (g === S.gen && (!(e instanceof ApiError) || !e.network)) handleError(e); }
 }
 
 export async function skip() {
@@ -603,7 +621,27 @@ export function closeCp(token = cpToken, source = 'tap') {
 }
 
 // ------------------------------------------------------------------------------------------------ timers
-let raf = 0, pollingDeadline = false;
+let raf = 0, pollingDeadline = false, quotaTry = { at: null, n: 0, next: 0 };
+
+/**
+ * The daily reset was reached on a quota screen: ask the server (never treat a local zero as permission to play).
+ * Retried every 2 s, at most 5 times per reset instant, until the server's reset instant has moved on.
+ */
+async function quotaReset() {
+  if (!S.boot) return;
+  const at = S.boot.quota.resetsAt;
+  if (quotaTry.at !== at) quotaTry = { at, n: 0, next: 0 };
+  if (quotaTry.n >= 5 || now() < quotaTry.next) return;
+  quotaTry.n++; quotaTry.next = now() + 2000;
+  if (S.view.startsWith('G01.')) return boot();
+  if (!S.view.startsWith('G07.') || !S.result) return;
+  const g = S.gen, runId = S.result.runId;
+  try {
+    const b = await api.bootstrap();
+    if (g !== S.gen || !S.result || S.result.runId !== runId) return;
+    S.boot = b; S.result = { ...S.result, quota: b.quota }; render();
+  } catch (e) { /* the result keeps its last known quota; starting a run is still decided by the server */ }
+}
 function tickLoop() {
   if (raf) return;
   const step = () => {
@@ -624,7 +662,12 @@ function tickLoop() {
       raf = requestAnimationFrame(step); return;
     }
     const cd = $('[data-countdown]', root);
-    if (cd && S.boot) { const s = untilInstant(clock.ms(S.boot.quota.resetsAt) - clock.serverNow()); if (cd.textContent !== s) cd.textContent = s; raf = requestAnimationFrame(step); }
+    if (cd && S.boot) {
+      const rem = clock.ms(S.boot.quota.resetsAt) - clock.serverNow(), s = untilInstant(rem);
+      if (cd.textContent !== s) cd.textContent = s;
+      if (rem <= 0) quotaReset();
+      raf = requestAnimationFrame(step);
+    }
   };
   raf = requestAnimationFrame(step);
 }
@@ -654,7 +697,8 @@ async function pollAfterDeadline(q) {
 function finished(run) {
   S.gen++;
   host.setBackHandler(null);
-  S.run = run; S.q = null; S.offer = null; S.op = null; S.ui.cp = null; S.ui.leave = false;
+  S.run = run; S.q = null; S.offer = null; S.op = null;
+  resetRunUi();
   S.ended = endedFrom(run);
   if (run.finishReason === 'inactive') return go('G10.INACTIVITY_END');
   if (run.finishReason === 'replaced') return go('G11.OTHER_DEVICE');
@@ -688,15 +732,19 @@ async function refreshResult(runId, g) {   // pending rewards: every 2 s up to 1
     if (!((rewardPending && t < 10000) || (codePending && t < 20000))) return;
     await new Promise(r => setTimeout(r, 2000));
     if (g !== S.gen) return;
-    try { S.result = await api.result(runId); S.balance = S.result.balance ?? S.balance; render(); } catch (e) { return; }
+    try { const r = await api.result(runId); if (g !== S.gen || !S.result || S.result.runId !== runId) return; S.result = r; S.balance = r.balance ?? S.balance; render(); } catch (e) { return; }
   }
 }
 
 export async function showProducts() {
   const runId = S.result && S.result.runId; if (!runId || !feat('products')) return;
   go('G08.LOADING');
-  try { S.products = S.products && S.products.runId === runId ? S.products : await api.products(runId); go('G08.LIST'); }
-  catch (e) { go('G08.ERROR'); }
+  const g = S.gen, mine = () => g === S.gen && S.view === 'G08.LOADING' && S.result && S.result.runId === runId;   // still this request's screen
+  try {
+    const list = S.products && S.products.runId === runId ? S.products : await api.products(runId);
+    if (!mine()) return;
+    S.products = list; go('G08.LIST');
+  } catch (e) { if (mine()) go('G08.ERROR'); }
 }
 
 export async function openProduct(link, id) {
@@ -706,10 +754,11 @@ export async function openProduct(link, id) {
 
 export async function prepareShare() {
   if (S.ui.shareBusy || !S.result || !feat('share')) return;
+  const g = S.gen, runId = S.result.runId, mine = () => g === S.gen && S.result && S.result.runId === runId;
   S.ui.shareBusy = true; render();
-  try { S.share = await api.share(S.result.runId); if (!feat('streak')) S.share.streakDays = null; }
-  catch (e) { S.share = null; toast('تصویر اشتراک ساخته نشد. دوباره امتحان کن.', true, 'G09.FAILED', true); }
-  S.ui.shareBusy = false; render();
+  try { const sh = await api.share(runId); if (!mine()) return; S.share = sh; if (!feat('streak')) S.share.streakDays = null; }
+  catch (e) { if (!mine()) return; S.share = null; toast('تصویر اشتراک ساخته نشد. دوباره امتحان کن.', true, 'G09.FAILED', true); }
+  finally { if (mine()) { S.ui.shareBusy = false; render(); } }
 }
 
 export async function sendShare() {
@@ -739,9 +788,11 @@ async function drawShareImage(s) {
 
 export async function copyCode() {
   const R = S.result; if (!R || !R.campaignCode || !R.campaignCode.code) return;
-  await host.copy(R.campaignCode.code);
+  const ok = await host.copy(R.campaignCode.code);
+  if (S.result !== R) return;
+  if (!ok) { S.ui.codeState = null; toast('کپی نشد. کد رو نگه دار و دستی کپی کن.', true, 'G07.CAMPAIGN_CODE.COPY_FAILED', true); return render(); }
   S.ui.codeState = 'copied'; render();
-  const r = R; setTimeout(() => { if (S.result === r && S.ui.codeState === 'copied') { S.ui.codeState = null; render(); } }, DUR.copiedMs);
+  setTimeout(() => { if (S.result && S.result.runId === R.runId && S.ui.codeState === 'copied') { S.ui.codeState = null; render(); } }, DUR.copiedMs);
 }
 
 // ------------------------------------------------------------------------------------------------ connectivity & lifecycle
@@ -750,7 +801,9 @@ function setOffline(off) {
   if (off) return render();
   if (S.run && inRun(S.view)) {                              // reconcile inline; the screen stays (CP-26)
     S.ui.resuming = true; render();
-    api.run(S.run.runId).then(run => { S.ui.resuming = false; applyRun(run); }).catch(e => { S.ui.resuming = false; render(); if (!(e instanceof ApiError) || !e.network) handleError(e); });
+    const g = S.gen;
+    api.run(S.run.runId).then(run => { if (g !== S.gen) return; S.ui.resuming = false; applyRun(run); })
+      .catch(e => { if (g !== S.gen) return; S.ui.resuming = false; render(); if (!(e instanceof ApiError) || !e.network) handleError(e); });
   } else render();
 }
 
@@ -761,6 +814,7 @@ export function init(el) {
   document.addEventListener('visibilitychange', () => {       // backgrounding is not leaving; revalidate on return
     if (document.visibilityState !== 'visible') return;
     clock.resetAfterSleep();
+    if (S.view === 'G01.QUOTA_EXHAUSTED') return boot();       // the reset may have passed while the app was in the background
     if (S.run && inRun(S.view) && !S.ui.cp && !['G03.CORRECT_FEEDBACK', 'G03.WRONG_FEEDBACK', 'G03.TIMEOUT'].includes(S.view)) reconcileRun();
   });
   root.addEventListener('click', onClick);

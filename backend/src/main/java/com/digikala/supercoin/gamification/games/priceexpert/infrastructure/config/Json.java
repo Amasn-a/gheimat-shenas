@@ -27,7 +27,11 @@ public final class Json {
      * constructors (databind #2992, fixed in 2.15). Reads therefore rename snake_case keys to camelCase first and bind
      * with a strategy-free mapper. With Jackson ≥ 2.15 in supercoin this indirection can be removed.
      */
-    private static final ObjectMapper READER = build().setPropertyNamingStrategy(null);
+    private static final ObjectMapper READER = build().setPropertyNamingStrategy(null)
+            .configure(DeserializationFeature.ACCEPT_FLOAT_AS_INT, false)            // 300.9 is not an integer: rejected, not truncated
+            .configure(com.fasterxml.jackson.databind.MapperFeature.ALLOW_COERCION_OF_SCALARS, false);   // "300" is not a number
+    private static final com.fasterxml.jackson.databind.PropertyNamingStrategies.NamingBase SNAKE =
+            (com.fasterxml.jackson.databind.PropertyNamingStrategies.NamingBase) PropertyNamingStrategies.SNAKE_CASE;
 
     private Json() {}
 
@@ -71,19 +75,33 @@ public final class Json {
 
     private static <T> T bind(com.fasterxml.jackson.databind.JsonNode tree, Class<T> type) throws IOException {
         if (com.fasterxml.jackson.databind.JsonNode.class.isAssignableFrom(type)) return type.cast(tree);
-        return READER.treeToValue(camel(tree), type);
+        if (tree == null || !tree.isObject()) throw new IllegalArgumentException("the body must be a JSON object");
+        return READER.treeToValue(camel(tree, "$"), type);
     }
 
-    private static com.fasterxml.jackson.databind.JsonNode camel(com.fasterxml.jackson.databind.JsonNode n) {
-        if (n == null) return null;
+    /**
+     * snake_case → camelCase for binding (see READER). The wire has exactly one spelling per field: a key that is not
+     * the snake_case form of its camelCase name ("choice_", "minBp") is rejected, so two wire keys can never collide on
+     * one field. Arrays never carry nulls in this API.
+     */
+    private static com.fasterxml.jackson.databind.JsonNode camel(com.fasterxml.jackson.databind.JsonNode n, String at) {
         if (n.isObject()) {
             com.fasterxml.jackson.databind.node.ObjectNode out = READER.createObjectNode();
-            n.fields().forEachRemaining(e -> out.set(toCamel(e.getKey()), camel(e.getValue())));
+            var it = n.fields();
+            while (it.hasNext()) {
+                var e = it.next();
+                String c = toCamel(e.getKey());
+                if (!SNAKE.translate(c).equals(e.getKey())) throw new IllegalArgumentException("unexpected field name " + at + "." + e.getKey());
+                out.set(c, camel(e.getValue(), at + "." + e.getKey()));
+            }
             return out;
         }
         if (n.isArray()) {
             com.fasterxml.jackson.databind.node.ArrayNode out = READER.createArrayNode();
-            n.forEach(x -> out.add(camel(x)));
+            for (int i = 0; i < n.size(); i++) {
+                if (n.get(i).isNull()) throw new IllegalArgumentException("null element at " + at + "[" + i + "]");
+                out.add(camel(n.get(i), at + "[" + i + "]"));
+            }
             return out;
         }
         return n;

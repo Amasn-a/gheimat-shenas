@@ -72,6 +72,11 @@ public final class JdbcRunRepository implements RunRepository {
         r.stateRevision++;
     }
 
+    @Override public List<String> activeRunIds(String afterRunId, int limit) {
+        return query("SELECT run_id FROM pe_run WHERE state <> 'FINISHED' AND run_id > ? ORDER BY run_id LIMIT ?",
+                rs -> rs.getString(1), afterRunId == null ? "" : afterRunId, limit);
+    }
+
     @Override public List<String> dueRunIds(Instant now, int limit) {
         return query("SELECT run_id FROM pe_run WHERE state <> 'FINISHED' AND next_deadline_at <= ? ORDER BY next_deadline_at LIMIT ?",
                 rs -> rs.getString(1), now, limit);

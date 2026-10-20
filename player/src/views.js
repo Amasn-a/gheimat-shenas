@@ -217,7 +217,7 @@ export function vHelp(m) {
     '<div class="v3-hl v3-hl--sm"><h1>چطور بازی کنم؟</h1></div>' +
     `<div class="v3-panel v3-panel--fit v3-help"><ol class="v3-steps">${lis}</ol><div><p class="v3-plays v3-help__cpt">چک‌پوینت‌ها و پاداش‌ها</p><div class="v3-cps">${cps}</div>` +
     '<p class="v3-plays v3-help__note">پاداش‌ها جمع نمی‌شن؛ فقط پاداش بالاترین چک‌پوینت واریز می‌شه.</p>' +
-    `<p class="v3-plays v3-help__note">هر روز ${fa(m.playsPerDay)} دست داری.${cont.enabled && cont.cap > 0 ? ` اگه اشتباه کنی و دیجی‌کوین کافی داشته باشی، در هر دست یک بار می‌تونی با ${fa(cont.cost)} دیجی‌کوین ادامه بدی.` : ''}</p></div>` +   // CP-29, numbers from config
+    `<p class="v3-plays v3-help__note">هر روز ${fa(m.playsPerDay)} دست داری.${cont.enabled && cont.cap > 0 ? ` اگه اشتباه کنی و دیجی‌کوین کافی داشته باشی، در هر دست ${cont.cap === 1 ? 'یک بار' : `تا ${fa(cont.cap)} بار`} می‌تونی با ${fa(cont.cost)} دیجی‌کوین ادامه بدی.` : ''}</p></div>` +   // CP-29, numbers from config
     `<div class="v3-actions">${GOLD('فهمیدم، بزن بریم', ` data-act="${close}"`, false)}</div></div>`, '', 'page');
 }
 

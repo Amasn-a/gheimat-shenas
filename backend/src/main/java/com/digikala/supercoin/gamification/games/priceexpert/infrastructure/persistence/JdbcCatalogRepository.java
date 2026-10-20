@@ -38,15 +38,9 @@ public final class JdbcCatalogRepository implements CatalogRepository {
             userId, showDate, version, range.low(), range.high(), new BigintArray(exclude), limit);
     }
 
-    @Override public boolean anyIn(int version, List<PriceRange> ranges, Collection<Long> exclude) {
-        for (PriceRange r : ranges) {
-            if (r.isEmpty()) continue;
-            boolean found = one("""
-                SELECT 1 FROM pe_catalog_product WHERE catalog_version = ? AND eligible AND price_toman BETWEEN ? AND ?
-                AND NOT (dkp = ANY (?)) LIMIT 1""", rs -> true, version, r.low(), r.high(), new BigintArray(exclude)).isPresent();
-            if (found) return true;
-        }
-        return false;
+    @Override public List<PricePoint> eligiblePrices(int version) {
+        return query("SELECT dkp, price_toman FROM pe_catalog_product WHERE catalog_version = ? AND eligible ORDER BY price_toman, dkp",
+                rs -> new PricePoint(rs.getLong(1), rs.getLong(2)), version);
     }
 
     @Override public List<CatalogProduct> referenceCandidates(int version, String userId, LocalDate showDate, int limit) {

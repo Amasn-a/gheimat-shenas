@@ -29,6 +29,8 @@ import java.util.logging.Logger;
 public final class PaymentService {
     private static final Logger LOG = Logger.getLogger(PaymentService.class.getName());
     private static final Duration LEASE = Duration.ofSeconds(20);
+    /** PROPOSED: players whose due operations are processed at once per worker batch. */
+    static final int WORKER_PARALLELISM = 4;   // each in-flight operation uses at most one pooled connection at a time
 
     private final PriceExpertContext ctx;
     private final SettlementService settlement;
@@ -236,7 +238,7 @@ public final class PaymentService {
         if (player.blocked || !ctx.settings().gameEnabled()) return false;
         GameConfig cfg = ctx.config(run.configVersion);
         CatalogProduct ref = ctx.catalog().product(run.catalogVersion, run.referenceDkp).orElseThrow();
-        return selection.hasNextQuestion(run.catalogVersion, cfg, ref.priceToman(), run.score, ctx.runs().runProductDkps(run.runId));
+        return selection.canReveal(run.catalogVersion, cfg, ref.priceToman(), run.score, ctx.runs().runProductDkps(run.runId));
     }
 
     /** Monitoring only (R-47): no player-facing effect, no eligibility change. Counted by actual payment day (F-03). */
@@ -265,12 +267,20 @@ public final class PaymentService {
         ctx.tx().afterCommit(() -> ctx.events().emit(name, name + ":" + op.operationId, e));
     }
 
-    /** Worker entry point. */
+    /**
+     * Worker entry point. Different players' operations run in parallel (bounded), one player's in order, so a slow
+     * provider call delays only its own player's queue instead of the whole batch (claims keep each operation single-owner).
+     */
     public int processDue(int limit) {
-        List<String> ids = ctx.tx().inTransaction(() -> ctx.ledger().dueOperationIds(ctx.now(), limit));
-        for (String id : ids) {
-            try { process(id); } catch (RuntimeException e) { LOG.warning("operation " + id + " failed: " + e); }
-        }
-        return ids.size();
+        List<com.digikala.supercoin.gamification.games.priceexpert.application.port.out.LedgerRepository.DueOperation> due =
+                ctx.tx().inTransaction(() -> ctx.ledger().dueOperations(ctx.now(), limit));
+        Map<String, List<String>> byUser = new LinkedHashMap<>();
+        due.forEach(d -> byUser.computeIfAbsent(d.userId(), k -> new java.util.ArrayList<>()).add(d.operationId()));
+        try (var pool = java.util.concurrent.Executors.newFixedThreadPool(WORKER_PARALLELISM, Thread.ofVirtual().factory())) {
+            for (List<String> ids : byUser.values()) pool.submit(() -> ids.forEach(id -> {
+                try { process(id); } catch (RuntimeException e) { LOG.warning("operation " + id + " failed: " + e); }
+            }));
+        }                                                                      // close() waits for the batch
+        return due.size();
     }
 }

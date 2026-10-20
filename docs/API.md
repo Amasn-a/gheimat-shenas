@@ -11,8 +11,9 @@ Every route, field name and error code below is a **proposal implemented in this
   - Same key with a different body: `422 IDEMPOTENCY_MISMATCH`.
   - Same key while the first request is still running: `409 REQUEST_IN_PROGRESS`. The first request holds the key on a lease (proposed: 30 s for player routes, 15 min for admin writes). If its process dies, a retry with the same key and body takes the key over after the lease and executes; the domain rules keep that safe (first answer wins, one payment operation per offer).
   - Errors are not stored, so a retry is evaluated again.
+  - A replayed response carries its original `server_time`; the client does not use it as a clock sample. (If the API is served from another origin, expose `Idempotent-Replay` with `Access-Control-Expose-Headers`.)
   - The client keeps one key per logical action (for example `answer:<question_id>`). It uses a new key only for a deliberately new attempt, such as a retry after a rejected debit.
-- **Validation:** unknown fields, duplicate JSON keys, wrong types and bodies over 16 KiB get `422 VALIDATION_FAILED`. The client never sends a time, price, score, cost or balance.
+- **Validation:** unknown fields, duplicate JSON keys, keys that are not the field's snake_case spelling, wrong types (no number/string coercion, no fractional integers), bodies that are not a JSON object, null array elements and bodies over 16 KiB get `422 VALIDATION_FAILED`. The client never sends a time, price, score, cost or balance.
 - **Object access:** another user's id, or an unknown id, gets `404 NOT_FOUND`.
 - **Rate limits:** `429 RATE_LIMITED`. The values are proposed: start 10 per minute per user; polling 4 per second per run.
 - **Error body:** `{ "code", "message", ...details }`. A conflict also carries `state`, the current RunView, so the client can recover without another call.
@@ -92,15 +93,16 @@ Every route, field name and error code below is a **proposal implemented in this
 |---|---|
 | `POST /session` `{username, password}` · `DELETE /session` · `GET /me` | A06 sign-in |
 | `GET /config` | Active and draft versions, validation errors, diff, daily cap, bounds, game availability |
-| `POST /config/versions` (GameConfig) | Save the draft (A01–A04) |
-| `POST /config/versions/{v}/discard` | Discard the draft |
-| `POST /config/versions/{v}/publish` `{version, expected_active_version, reason}` | A00.PUBLISH_CONFIRM. A stale `expected_active_version` gets `409 VERSION_CONFLICT` |
+| `POST /config/versions` (GameConfig), header `If-Match: <draft_revision>` (omit when there is no draft) | Save the draft (A01–A04). Returns `revision`. A draft changed, published or discarded since it was loaded gets `409 DRAFT_CHANGED` |
+| `POST /config/versions/{v}/discard`, header `If-Match: <draft_revision>` | Discard the draft (`409 DRAFT_CHANGED` if it changed) |
+| `POST /config/versions/{v}/publish` `{version, expected_active_version, draft_revision, reason}` | A00.PUBLISH_CONFIRM. A stale `expected_active_version` gets `409 VERSION_CONFLICT`; a draft that is not the reviewed revision gets `409 DRAFT_CHANGED` |
 | `POST /difficulty/pair-counts` `{bands}` | A04: ordered product pairs per band in the active catalog |
 | `POST /game/availability` `{enabled, player_message, reason}` | A05 kill switch (R-23) |
-| `GET /runs?user_id=&run_id=` · `GET /operations?user_id=&run_id=&status=` · `POST /operations/{id}/retry` | A05 search; retry only from NEEDS_REVIEW |
+| `GET /runs?user_id=&run_id=` · `GET /operations?user_id=&run_id=&status=` · `POST /operations/{id}/retry` `{reason}` | A05 search; retry only from NEEDS_REVIEW; a reason is required (also for unblock and campaign end) |
 | `GET /players/{user_id}` · `POST /players/{user_id}/block` `{reason, review_reference}` · `POST …/unblock` `{reason}` · `POST /reviews` | A05 review and block (R-22, R-30, R-34) |
 | `GET /alerts` · `GET /monitoring` | Operational counters and the integration status (fake vs real) |
-| `GET /audit?area=&actor=&from=&to=&before_id=` | A06 change history (100 per page) |
+| `GET /audit?area=&actor=&changes_only=1&from=&to=&before_id=` | A06 change history (100 per page). `changes_only=1` leaves out read-access and draft-save events before paging. A publish's `correlation_id` is the version it replaced |
+| `GET /entitlements/review` · `POST /entitlements/{id}/retry` `{reason}` | Campaign codes whose issue exhausted its retries; audited re-queue (the provider call keeps the same entitlement id) |
 | `GET /campaigns` · `POST /campaigns` · `POST /campaigns/{id}` · `POST /campaigns/{id}/end` | A07 |
 
 ## Development-only routes (never registered in production)

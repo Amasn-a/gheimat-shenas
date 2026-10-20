@@ -10,20 +10,33 @@ import java.util.function.Supplier;
 /**
  * Applies the handoff's 2 s per-call timeout to any coin provider. A timed-out mutation is UNKNOWN (the call may
  * still complete at the provider; reconciliation finds out). A timed-out balance read is "unreadable".
+ * <p>
+ * Outstanding work is bounded: at most {@code maxInFlight} provider calls run at once, counting calls that already
+ * timed out for the caller but have not returned. When that many are outstanding (a hung provider), a new call is not
+ * started: a mutation is answered UNKNOWN without being sent, which reconciliation handles like any other unknown, and a
+ * balance read is "unreadable". A timed-out call is interrupted; its effect is still treated as unknown, never as
+ * proof that nothing happened. The real adapter must also set its own connect and read deadlines (D06).
  */
-public final class TimeLimitedCoinGateway implements CoinGateway {
+public final class TimeLimitedCoinGateway implements CoinGateway, AutoCloseable {
+    /** PROPOSED: concurrent provider calls per instance; tune with the provider's capacity. */
+    public static final int DEFAULT_MAX_IN_FLIGHT = 64;
+
     private final CoinGateway delegate;
     private final Duration timeout;
+    private final Semaphore inFlight;
     private final ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
 
-    public TimeLimitedCoinGateway(CoinGateway delegate, Duration timeout) {
+    public TimeLimitedCoinGateway(CoinGateway delegate, Duration timeout) { this(delegate, timeout, DEFAULT_MAX_IN_FLIGHT); }
+
+    public TimeLimitedCoinGateway(CoinGateway delegate, Duration timeout, int maxInFlight) {
         this.delegate = delegate;
         this.timeout = timeout;
+        this.inFlight = new Semaphore(maxInFlight);
     }
 
     @Override public OptionalLong balance(String userId) {
         try { return call(() -> delegate.balance(userId)); }
-        catch (TimeoutException | ExecutionException e) { return OptionalLong.empty(); }
+        catch (TimeoutException | ExecutionException | RejectedExecutionException e) { return OptionalLong.empty(); }
     }
 
     @Override public Result charge(String userId, long amount, String key) { return mutation(() -> delegate.charge(userId, amount, key)); }
@@ -36,11 +49,20 @@ public final class TimeLimitedCoinGateway implements CoinGateway {
         try { return call(s); }
         catch (TimeoutException e) { return new Result(Outcome.UNKNOWN, null, "timeout after " + timeout.toMillis() + " ms"); }
         catch (ExecutionException e) { return new Result(Outcome.UNKNOWN, null, "provider error: " + e.getCause().getClass().getSimpleName()); }
+        catch (RejectedExecutionException e) { return new Result(Outcome.UNKNOWN, null, "not sent: provider calls saturated"); }
     }
 
     private <T> T call(Supplier<T> s) throws TimeoutException, ExecutionException {
-        Future<T> f = executor.submit(s::get);
+        if (!inFlight.tryAcquire()) throw new RejectedExecutionException("saturated");
+        Future<T> f;
+        try {
+            f = executor.submit(() -> { try { return s.get(); } finally { inFlight.release(); } });   // released when the call really ends
+        } catch (RejectedExecutionException e) { inFlight.release(); throw e; }
         try { return f.get(timeout.toMillis(), TimeUnit.MILLISECONDS); }
-        catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new TimeoutException("interrupted"); }
+        catch (TimeoutException e) { f.cancel(true); throw e; }
+        catch (InterruptedException e) { f.cancel(true); Thread.currentThread().interrupt(); throw new TimeoutException("interrupted"); }
     }
+
+    /** Stops accepting calls and interrupts the outstanding ones (shutdown). */
+    @Override public void close() { executor.shutdownNow(); }
 }

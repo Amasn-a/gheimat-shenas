@@ -20,6 +20,7 @@ configureHost({
   close: () => console.info('[dev host] close WebView'),
 });
 
+const escAttr = v => String(v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);   // URL values are untrusted, even in development
 const panel = document.createElement('aside');
 panel.className = 'pe-devpanel';
 panel.innerHTML = `
@@ -27,8 +28,8 @@ panel.innerHTML = `
 <div>state <span class="state" id="dvState">…</span></div>
 <small>Real backend · fake DigiCoin (in-project) · dev login · dev host stand-in</small>
 <fieldset><legend>Player</legend>
-  user <input type="text" id="dvUser" value="${user}"> <button id="dvUserGo">switch</button><br>
-  device <code>${device.slice(0, 8)}</code> <button id="dvNewDevice">new device</button>
+  user <input type="text" id="dvUser" value="${escAttr(user)}"> <button id="dvUserGo">switch</button><br>
+  device <code>${escAttr(device.slice(0, 8))}</code> <button id="dvNewDevice">new device</button>
 </fieldset>
 <fieldset><legend>Fake DigiCoin (backend)</legend>
   balance <input type="number" id="dvBal" value="120" min="0"> <button id="dvBalGo">set</button><br>
