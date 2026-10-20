@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="300" height="60" viewBox="0 0 300 60" role="img" aria-label="Play the demo · بازی کن">
+  <rect x="1" y="1" width="298" height="58" rx="16" fill="#EF4056"/>
+  <rect x="1" y="1" width="298" height="58" rx="16" fill="none" stroke="#C62B40" stroke-width="2"/>
+  <circle cx="34" cy="30" r="16" fill="#FFFFFF"/>
+  <path d="M29 21.5 L42 30 L29 38.5 Z" fill="#EF4056"/>
+  <text x="62" y="37" font-family="Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="19" font-weight="700" fill="#FFFFFF">Play the demo</text>
+  <text x="282" y="37" text-anchor="end" font-family="Vazirmatn, Tahoma, Segoe UI, Arial, sans-serif" font-size="19" font-weight="700" fill="#FFFFFF">بازی کن</text>
+</svg>
