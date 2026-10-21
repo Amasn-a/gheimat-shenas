@@ -1,376 +1,339 @@
-// Screen markup in the v3 «ویترین» design system classes. Views are pure functions of the view model: they never read
-// the network or the clock themselves. All text from data goes through esc()/title(). Light theme only (brief 2026-10-20).
+// Screen markup of the redesign of 2026-10-21 (white base, Digikala red actions, badge family). Views are pure functions
+// of the view model: they never read the network or the clock. All text from data goes through esc()/title().
+// Direction rules (§2): back/close sit at the physical right (first in RTL DOM order) and point right; inside continue,
+// start, next and play buttons the icon is written after the label, so it sits on the left.
 import { I } from './icons.js';
-import { fa, money, esc, title, untilInstant } from './fmt.js';
-import { character } from './characters.js';
+import { fa, money, esc, title } from './fmt.js';
 
-const ICO = (k, s = 20) => I[k].replace('width="24" height="24"', `width="${s}" height="${s}"`);
-const COIN = '<i class="v3-coin" aria-hidden="true"></i>';
 const L = ' disabled aria-disabled="true"';
-export const Q_TEXT = 'قیمتش گرون‌تره یا ارزون‌تر؟';   // exact question (R-17)
-export const INTRO = 'دو تا کالا رو ببین، قیمت رو حدس بزن و جواب بده!';   // start screen intro, exact (brief 2026-10-20)
+const ICO = (k, s = 20) => I[k].replace('width="24" height="24"', `width="${s}" height="${s}"`);
+const SPIN = '<span class="q-spin" aria-hidden="true"></span>';
+/** Stand-in DigiCoin mark: a plain coin with no currency sign (the official DigiCoin logo was not supplied: asset dependency). */
+export const COIN = '<svg class="q-coin" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="10" fill="#F2C14E" stroke="#C88A12" stroke-width="2"/><circle cx="12" cy="12" r="5.5" fill="none" stroke="#C88A12" stroke-width="1.6"/></svg>';
+export const TAG = '<svg viewBox="0 0 48 48" aria-hidden="true" focusable="false"><path d="M8 9.5V22l17.5 17.5a2 2 0 0 0 2.8 0L39.5 28.3a2 2 0 0 0 0-2.8L22 8H9.5A1.5 1.5 0 0 0 8 9.5Z" fill="currentColor"/><circle cx="15.5" cy="15.5" r="3.2" fill="var(--tag-hole, #EF4056)"/></svg>';
+const BADGE_SRC = id => `assets/badges/${encodeURIComponent(id)}.webp`;
+export const BADGES = ['badge_5', 'badge_10', 'badge_15', 'badge_20'];
+/** A checkpoint's badge image; an unknown id (a checkpoint added later in A02) gets the badge of its position. */
+export const badgeId = (c, i) => BADGES.includes(c.badgeAssetId) ? c.badgeAssetId : BADGES[Math.min(BADGES.length - 1, Math.max(0, i))];
+const NEUTRAL = '<svg class="q-badge-neutral" viewBox="0 0 120 120" aria-hidden="true"><path d="M60 8l40 14v30c0 28-17 47-40 58C37 99 20 80 20 52V22Z" fill="#ECEEF2" stroke="#C9CDD5" stroke-width="4"/><path d="M60 40v24M60 76h.01" stroke="#8A8F99" stroke-width="8" stroke-linecap="round"/></svg>';
+
+export const Q_PROMPT = 'این کالا نسبت به کالای بالا...';   // §6, exact
+export const DIRW = { up: 'گرون‌تر', down: 'ارزون‌تر', eq: 'قیمت برابر' };
+export const dirOf = d => d === 'higher' ? 'up' : d === 'lower' ? 'down' : 'eq';
 
 // ---------------------------------------------------------------- primitives
 export const keyOf = card => 'p' + hash(card.imageUrl || card.displayTitle || '');
 function hash(s) { let h = 2166136261; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return (h >>> 0).toString(36); }
 const mk = (k, fx) => k ? ` data-m="${k}" data-mfx="${fx}"` : '';
-export function img(card, loading, keyed, onload) {
+export function img(card, keyed, onload) {
   const key = keyed ? mk('img:' + keyOf(card), 'box') : '';
-  if (loading === 'skeleton') return `<div class="v3-img is-loading v3-skel v3-skel--card" role="img" aria-label="تصویر در حال بارگذاری"${key}></div>`;
-  if (card.art) return `<div class="v3-img"${key}>${card.art}</div>`;   // guide demo: drawn art, never a catalog product
-  return `<div class="v3-img"${key}><img src="${esc(card.imageUrl)}" alt="" decoding="async"${onload ? ` data-onload="${onload}"` : ''}></div>`;
+  if (card.art) return `<span class="q-img"${key}>${card.art}</span>`;   // onboarding demo: drawn art, never a catalog product
+  if (!card.imageUrl) return `<span class="q-img q-img--none"${key}></span>`;
+  return `<span class="q-img"${key}><img src="${esc(card.imageUrl)}" alt="" decoding="async"${onload ? ` data-onload="${onload}"` : ''}></span>`;
 }
-export function priceHTML(n, cls = '', attrs = '') {
-  const d = String(Math.round(n)).length, size = d >= 10 ? ' v3-price--xl' : d >= 9 ? ' v3-price--long' : '';
-  return `<div class="v3-price${size}${cls}"${attrs}><b>${money(n)}</b><small>تومان</small></div>`;
-}
-const ttl = card => `<h3${mk('ttl:' + keyOf(card), 'text')}>${title(card.displayTitle)}</h3>`;
-// the first product: no «کالای مرجع» label on screen (brief 2026-10-20); screen readers still hear what it is
-export const refTicket = card => `<article class="v3-ticket" data-tour="first" aria-label="کالای اول، ${money(card.price)} تومان"${mk('card:' + keyOf(card), 'frame')}>${img(card, false, true)}<div class="v3-ticket__b">${ttl(card)}${priceHTML(card.price, '', mk('prc:' + keyOf(card), 'text'))}</div></article>`;
-// UX-6: before «نمایش بده» the first product is the large card; it shrinks into the ticket when the question is requested
-export const refBig = card => `<article class="v3-hero v3-hero--ref" data-tour="first" aria-label="کالای اول، ${money(card.price)} تومان"${mk('card:' + keyOf(card), 'frame')}>${img(card, false, true)}<div class="v3-hero__b">${ttl(card)}${priceHTML(card.price, '', mk('prc:' + keyOf(card), 'text'))}</div></article>`;
-
-/**
- * Question row with the timer. Timer modes: countdown (white → orange, red in the last 3 s, on a dark plate so every
- * colour reads on the red stage), 'idle' (10 before «نمایش بده»), 'pending' (an answer is being processed: the countdown
- * is replaced by a spinner), 'wait' (the visible time is over and the server is recording it), 'off'.
- */
-export function ask(text, o = {}) {
-  const sp = o.spin ? '<span class="v3-spin" aria-hidden="true"></span>' : '';
-  let tm;
-  if (o.mode === 'idle') tm = `<div class="v3-timer is-idle" data-tour="timer" aria-label="۱۰ ثانیه پس از نمایش"><b>${fa(10)}<small>ثانیه</small></b></div>`;
-  else if (o.mode === 'off') tm = '<div class="v3-timer is-off" aria-hidden="true"><b></b></div>';
-  else if (o.mode === 'pending') tm = '<div class="v3-timer is-busy" data-tour="timer" role="status" aria-label="در حال بررسی پاسخ"><b><span class="v3-spin" aria-hidden="true"></span></b></div>';
-  else if (o.mode === 'wait') tm = `<div class="v3-timer is-zero" data-tour="timer" role="status" aria-label="زمان تموم شد"><b>${fa(0)}</b></div>`;
-  else tm = `<div class="v3-timer${o.low ? ' is-low' : ''}" data-tour="timer" style="--p:${o.p};--tc:${o.tc}" role="timer" aria-live="off" aria-label="${o.t} ثانیه" data-timer><b>${o.t}</b></div>`;
-  return `<div class="v3-ask"${mk('ask', 'fade')}><p${o.muted ? ' class="is-muted"' : ''}>${sp}${text}</p>${tm}</div>`;
-}
-const HIDDEN = k => `<span class="v3-hidden" role="img" aria-label="قیمت مخفی"${mk('prc:' + k, 'text')}>${I.lock}<b>؟</b><small>تومان</small></span>`;
-const ARR = {
-  down: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M6 13l6 6 6-6"/></svg>',
-  up: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6"/></svg>',
-  eq: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" aria-hidden="true"><path d="M6 9h12M6 15h12"/></svg>' };
-export const DIRW = { up: 'گرون‌تر', down: 'ارزون‌تر', eq: 'قیمت برابر' };
-export const dirOf = d => d === 'higher' ? 'up' : d === 'lower' ? 'down' : 'eq';
-/** Second product: hidden while answerable; after the answer, the authorised revealed price sits on it (UX-1). No «کالای دوم» label. */
-export function hero(card, st, loading, dir, revealedPrice) {
-  const k0 = keyOf(card);
-  const cls = { hidden: '', correct: ' is-correct', wrong: ' is-wrong', timeout: ' is-timeout' }[st];
-  const hint = loading ? '<p class="v3-hero__hint">عکس در راهه؛ از روی اسم هم می‌تونی جواب بدی.</p>' : '';   // CP-22 (R-58)
-  if (st === 'hidden') return `<article class="v3-hero" data-tour="second" aria-label="کالای دوم، قیمت مخفی"${mk('card:' + k0, 'frame')}>${img(card, false, true, 'q')}<div class="v3-hero__b">${ttl(card)}${hint}${HIDDEN(k0)}</div></article>`;
-  const k = { correct: 'ok', wrong: 'no', timeout: 'time' }[st], ic = { ok: I.check, no: '✕', time: '!' }[k];
-  const lead = st === 'correct' ? `<span class="v3-dir" role="img" aria-label="${DIRW[dir]}">${ARR[dir]}</span>` : '<span>قیمت واقعی</span>';   // «قیمت واقعی»: CP-34, proposed
-  const pr = `<div class="v3-reveal v3-reveal--${k}"${mk('prc:' + k0, 'text')}>${lead}${priceHTML(revealedPrice, ' v3-price--reveal' + (k === 'ok' ? ' v3-price--ok' : ''))}</div>`;
-  return `<article class="v3-hero${cls}" data-tour="second" aria-label="کالای دوم، ${{ ok: 'پاسخ درست', no: 'پاسخ اشتباه', time: 'وقت تموم شد' }[k]}"${mk('card:' + k0, 'frame')}><span class="v3-hero__badge v3-hero__badge--${k}" aria-hidden="true"${mk('badge:' + k0, 'fade')}>${ic}</span>${img(card, false, true)}<div class="v3-hero__b v3-hero__b--reveal">${ttl(card)}${pr}</div></article>`;
-}
-export function verdict(k, t, sub) {
-  const ic = { ok: I.check, no: '<b aria-hidden="true">✕</b>', time: I.clock }[k];
-  return `<div class="v3-verdict v3-verdict--${k}" role="status"${mk('ask', 'fade')}><span class="v3-verdict__i" aria-hidden="true">${ic}</span><b class="v3-verdict__t">${t}</b><span class="v3-verdict__s">${sub}</span></div>`;
-}
-export function tag(kind, t, text, btn, btnAttr) {
-  const b = btn ? `<button class="v3-btn v3-btn--white"${btnAttr || ''}>${btn}</button>` : '';
-  return `<div class="v3-tag${kind ? ' v3-tag--' + kind : ''}"${kind === 'preparing' ? ' aria-busy="true"' : ''}${mk('slot', 'fade')}><span class="v3-tag__string" aria-hidden="true"></span>` +
-    `<div class="v3-tag__card"><span class="v3-tag__hole" aria-hidden="true"></span><b aria-hidden="true">؟</b><span>${t}</span></div>${text ? `<p>${text}</p>` : ''}${b}</div>`;
-}
-/** Answer keys: stable position and equal prominence; accessible names include the first product's price (R-14). */
-export function keys(st, side, quiet, refPrice) {
-  const iU = `<span class="v3-ab__i" aria-hidden="true">${I.up}</span>`, iD = `<span class="v3-ab__i" aria-hidden="true">${I.down}</span>`;
-  const chk = `<span class="v3-ab__i" aria-hidden="true">${I.check}</span>`, x = '<span class="v3-ab__i" aria-hidden="true">✕</span>';
-  const spin = '<span class="v3-ab__i" aria-hidden="true"><span class="v3-spin"></span></span>';
-  const A = { c: '', a: ' data-act="ans-higher"', i: iU }, B = { c: '', a: ' data-act="ans-lower"', i: iD };
-  const me = side === 'higher' ? A : B, ot = side === 'higher' ? B : A;
-  if (st === 'off') { A.a = B.a = L; }
-  else if (st === 'pending') { me.c = ' is-picked'; me.a = ' aria-pressed="true" aria-busy="true"' + L; me.i = spin; ot.c = ' is-dim'; ot.a = L; }
-  else if (st === 'ok') { me.c = ' is-ok'; me.a = ' aria-pressed="true"' + L; me.i = chk; ot.c = ' is-dim'; ot.a = L; }
-  else if (st === 'no') { me.c = ' is-no'; me.a = ' aria-pressed="true"' + L; me.i = x; ot.c = ' is-truth'; ot.a = L; ot.i = chk; }
-  else if (st === 'truth') { me.c = ' is-truth'; me.a = L; me.i = chk; ot.c = ' is-dim'; ot.a = L; }
-  const rp = st === 'on' && refPrice ? money(refPrice) : '';
-  const lb = w => rp ? ` aria-label="${w} از ${rp} تومان"` : '';
-  return `<div class="v3-dock${quiet ? ' v3-dock--quiet' : ''}"${mk('dock', 'fade')}><div class="v3-ans" role="group" aria-label="پاسخ" data-tour="answers"><button class="v3-ab${A.c}"${A.a}${lb('گرون‌تر')}>${A.i}گرون‌تر</button><button class="v3-ab${B.c}"${B.a}${lb('ارزون‌تر')}>${B.i}ارزون‌تر</button></div></div>`;
-}
-function confetti(n, seed) {
-  let s = seed; const rnd = () => (s = (s * 9301 + 49297) % 233280) / 233280; const cols = ['#FFC633', '#FFFFFF', '#22C49A', '#FFE9A6', '#FF8FA0'];
-  let o = ''; for (let i = 0; i < n; i++) o += `<i style="left:${2 + Math.floor(rnd() * 94)}%;top:${Math.floor(rnd() * 80)}%;width:${[6, 8, 10][Math.floor(rnd() * 3)]}px;height:${[10, 14, 6][Math.floor(rnd() * 3)]}px;background:${cols[Math.floor(rnd() * 5)]};transform:rotate(${Math.floor(rnd() * 180)}deg);animation-delay:${Math.floor(rnd() * 200)}ms"></i>`;
-  return '<div class="v3-confetti" aria-hidden="true">' + o + '</div>';
-}
-export function stage(inner, extra = '', kind = '', dim = false) {
-  const modal = /v3-sheetwrap|pe-host|pe-daily-wrap/.test(extra) ? ' inert' : '';   // the tour keeps its target reachable itself
-  const kinds = kind ? kind.split(' ') : [];
-  return `<div class="v3-stage${kinds.map(k => ' v3-stage--' + k).join('')}${dim ? ' v3-stage--dim' : ''}"><div class="v3-screen${kinds.includes('page') ? ' v3-screen--page' : ''}"${modal}>${inner}</div>${extra}</div>`;
-}
-export function sheet(t, text, body, btns, st, icon, ring) {
-  let lead = '';
-  if (ring) lead = ring; else if (icon) lead = `<span class="v3-sheet__icon v3-sheet__icon--${icon[0]}" aria-hidden="true">${I[icon[1]] || icon[1]}</span>`;
-  return `<div class="v3-sheetwrap"><section class="v3-sheet" role="dialog" aria-modal="true" aria-labelledby="sh-t"><span class="v3-grip" aria-hidden="true"></span>` +
-    `<div class="v3-sheet__hd">${lead}<div><h3 id="sh-t">${t}</h3>${text ? `<p>${text}</p>` : ''}</div></div>${body || ''}${btns || ''}${st || ''}</section></div>`;
-}
-export function ring(remMs, totalMs) {
-  const s = fa(Math.ceil(remMs / 1000));
-  return `<div class="v3-ring${remMs <= 3000 ? ' is-low' : ''}" style="--p:${(remMs / totalMs).toFixed(3)}" role="timer" data-ring aria-label="${s} ثانیه برای تصمیم"><b>${s}</b><small>ثانیه</small></div>`;
-}
-/** The one place a DigiCoin balance is shown (brief 2026-10-20): inside the extra-life purchase sheet. */
-export const cost = (bal, costN) => `<div class="v3-cost"><div class="v3-cost__fee"><span>هزینه ادامه</span><b>${COIN}${fa(costN)} دیجی‌کوین</b></div><div><span>موجودی شما</span><b>${bal}</b></div></div>`;
+/** Price with its unit; the number is isolated LTR so digits, separators and «تومان» are read in the right place. */
+export const price = (n, cls = '', attrs = '') => `<p class="q-price${cls}"${attrs}><b dir="ltr">${money(n)}</b><small>تومان</small></p>`;
+export const BTN = (cls, label, a = '', icon = '') => `<button class="q-btn ${cls}"${a}><span>${label}</span>${icon ? `<i class="q-btn__i">${icon}</i>` : ''}</button>`;
+export const PRIMARY = (label, a, icon) => BTN('q-btn--primary', label, a, icon);
+export const BUSY = (label, cls = 'q-btn--primary') => `<button class="q-btn ${cls}" disabled aria-disabled="true" aria-busy="true"><span>${label}</span><i class="q-btn__i">${SPIN}</i></button>`;
+export const SECONDARY = (label, a, icon) => BTN('q-btn--secondary', label, a, icon);
 export function status(kind, text, icon, spin, alert) {
-  const lead = spin ? '<span class="v3-spin"></span>' : icon ? ICO(icon, 16) : '';
-  return `<div class="v3-status${kind ? ' v3-status--' + kind : ''}" role="${alert ? 'alert' : 'status'}"><span class="v3-status__i" aria-hidden="true">${lead}</span><span>${text}</span></div>`;
+  const lead = spin ? SPIN : icon ? ICO(icon, 18) : '';
+  return `<p class="q-status${kind ? ' q-status--' + kind : ''}" role="${alert ? 'alert' : 'status'}">${lead ? `<span class="q-status__i" aria-hidden="true">${lead}</span>` : ''}<span>${text}</span></p>`;
 }
-export const stagepill = (t, ic, no, btn) => `<div class="v3-stagepill${no ? ' v3-stagepill--no' : ''}" role="status">${ICO(ic, 18)}<span>${t}</span>${btn || ''}</div>`;
 export function toastHTML(t) {
   if (!t) return '';
-  return `<div class="v3-toast${t.no ? ' v3-toast--no' : ''}" role="${t.no ? 'alert' : 'status'}"><i aria-hidden="true">${t.no ? '!' : '✓'}</i>${t.text}</div>`;
+  return `<div class="q-toast${t.no ? ' q-toast--no' : ''}" role="${t.no ? 'alert' : 'status'}">${ICO(t.no ? 'alert' : 'check', 18)}<span>${t.text}</span></div>`;
 }
-export const BTN = (cls, t, a = '') => `<button class="v3-btn ${cls}"${a}>${t}</button>`;
-export const GOLD = (t, a = '', xl = true) => BTN('v3-btn--gold v3-btn--block' + (xl ? ' v3-btn--xl' : ''), t, a);
-export const BUSY = (t, xl = true) => BTN('v3-btn--block' + (xl ? ' v3-btn--xl' : ''), `<span class="v3-spin" aria-hidden="true"></span>${t}`, ' disabled aria-disabled="true" aria-busy="true"');
-export const BTNS = (...b) => '<div class="v3-sheet__btns">' + b.join('') + '</div>';
-export const SKIP = (a = ' data-act="skip"', t = 'رد کردن') => BTN('v3-btn--outline v3-btn--block', t, a);
-export const statecard = (ic, kind, t, text, actions) => `<div class="v3-statecard"><div class="v3-statecard__i${kind ? ' v3-statecard__i--' + kind : ''}" aria-hidden="true">${I[ic]}</div><h2>${t}</h2>${text ? `<p>${text}</p>` : ''}<div class="v3-statecard__a">${actions}</div></div>`;
-const PLAYI = '<svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z" fill="currentColor"/></svg>';
-const CB = n => `<b>${COIN}${fa(n)}</b>`;
-// checkpoint flag standing on the bar: the pole sits exactly on the threshold, the pennant waves toward the bar's end (RTL)
-const FLAG = '<svg viewBox="0 0 18 24" width="20" height="27" aria-hidden="true"><path d="M15 2v21" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/><path d="M14 2.5H3l3 4.2-3 4.3h11Z" fill="currentColor" stroke="rgba(0,0,0,.25)" stroke-width="1"/></svg>';
+/** Page header: back/close at the physical right, title, an optional end slot at the left. */
+export function hdr(t, act, label, end = '', cls = '') {
+  return `<header class="q-hdr${cls}"><button class="q-iconbtn" data-act="${act}" aria-label="${label}">${I.back}</button>${t ? `<h1 class="q-hdr__t">${t}</h1>` : '<span></span>'}<div class="q-hdr__end">${end}</div></header>`;
+}
+// a modal on top makes the page behind it inert (focus, taps, screen readers)
+export const page = (cls, inner, extra = '') => `<div class="q-page ${cls}"${/q-modal/.test(extra) ? ' inert' : ''}>${inner}</div>${extra}`;
+export function sheet(t, text, body, btns, icon) {
+  const lead = icon ? `<span class="q-sheet__icon q-sheet__icon--${icon[0]}" aria-hidden="true">${ICO(icon[1], 26)}</span>` : '';
+  return `<div class="q-scrim q-modal"><section class="q-sheet" role="dialog" aria-modal="true" aria-labelledby="sh-t">${lead}<h2 id="sh-t">${t}</h2>${text ? `<p>${text}</p>` : ''}${body || ''}<div class="q-sheet__btns">${btns}</div></section></div>`;
+}
+export const statecard = (ic, kind, t, text, actions) => `<div class="q-state"><span class="q-state__i${kind ? ' q-state__i--' + kind : ''}" aria-hidden="true">${ICO(ic, 30)}</span><h2>${t}</h2>${text ? `<p>${text}</p>` : ''}<div class="q-state__a">${actions}</div></div>`;
 
-// ---------------------------------------------------------------- HUD
-/** Gameplay top bar: back · the correct-answer count only (no caption, record, balance or streak) · a balancing spacer. */
-export function top(m) {
-  const lock = m.backLocked;
-  const p = m.plus ? '<span class="v3-plus" dir="ltr" aria-hidden="true">+۱</span>' : '';
-  return `<div class="v3-top" data-tour="hud"><button class="v3-round" aria-label="خروج از دست" data-act="back"${lock ? L : ''}>${I.back}</button>` +
-    `<div class="v3-score${m.plus ? ' is-up' : ''}" aria-live="polite"><b aria-hidden="true">${fa(m.score)}</b>${p}<span class="pe-sr">${fa(m.score)} جواب درست</span></div>` +
-    '<span class="v3-top__end" aria-hidden="true"></span></div>';
+// ---------------------------------------------------------------- G00 splash (§3)
+export function vSplash(error) {
+  const foot = error
+    ? `<div class="q-splash__foot">${status('no', 'بازی آماده نشد. اتصال اینترنت رو بررسی کن.', 'wifi', false, true)}${PRIMARY('تلاش دوباره', ' data-act="boot"', I.refresh)}</div>`
+    : '<div class="q-splash__foot" role="status"><span class="q-dots" aria-hidden="true"><i></i><i></i><i></i></span><p>داریم بازی رو آماده می‌کنیم...</p></div>';
+  return `<div class="q-page q-splash"><div class="q-splash__mid"><span class="q-logo q-logo--xl" aria-hidden="true">${TAG}</span><h1>قیمت‌شناس</h1><p>گرون‌تره یا ارزون‌تر؟</p></div>${foot}</div>`;
 }
-/** Page header: back on the right (RTL start), title, nothing on the left. No DigiCoin balance anywhere (brief 2026-10-20). */
-export function ptop(t, back, act, brand) {
-  return `<div class="v3-top"><button class="v3-round" aria-label="${back}" data-act="${act}">${I.back}</button><span class="v3-brand${brand ? '' : ' v3-brand--sm'}">${t}</span><span class="v3-top__end" aria-hidden="true"></span></div>`;
-}
-/**
- * One continuous progress bar: fills from zero with the count and is full at the LAST checkpoint; checkpoint thresholds
- * are flags (reached ones gold); ∞ marks that the count goes on after the last one. No reward amounts on the bar.
- */
-export function track(score, cps, earned) {
-  const last = cps.length ? cps[cps.length - 1].requiredCorrect : 1, next = cps.find(c => c.requiredCorrect > score);
-  const f = Math.min(1, score / last);
-  const flags = cps.map(c => `<span class="v3-pflag${c.requiredCorrect <= score ? ' is-done' : ''}${earned && c.requiredCorrect === score ? ' is-new' : ''}" style="--x:${(100 * c.requiredCorrect / last).toFixed(2)}%">${FLAG}</span>`).join('');
-  const label = next ? `${fa(score)} جواب درست؛ چک‌پوینت بعدی با ${fa(next.requiredCorrect)} جواب درست` : `${fa(score)} جواب درست؛ همه‌ی چک‌پوینت‌ها رو گرفتی`;
-  return `<div class="v3-prog" data-tour="progress" role="progressbar" aria-valuemin="0" aria-valuemax="${last}" aria-valuenow="${Math.min(score, last)}" aria-label="${label}">` +
-    `<div class="v3-prog__bar"><i class="v3-prog__fill${earned ? ' is-up' : ''}" style="--f:${f.toFixed(4)}"></i>${flags}</div><span class="v3-prog__inf" aria-hidden="true">∞</span></div>`;
-}
-export const play = (t, trk, main, dock, extra, toast, dim) => stage(t + trk + `<div class="v3-main">${main}</div>` + dock, (extra || '') + toastHTML(toast), 'play', dim);
 
-// ---------------------------------------------------------------- G01 start
-function illu() {   // approved start illustration: product-free art, no prices, never a future question's product (D-5)
-  return '<div class="v3-illu" aria-hidden="true"><div class="v3-illu__art"><div class="v3-glow"></div>' +
-    '<div class="v3-illu__t v3-illu__t--a"><div class="v3-img v3-img--art"></div></div><div class="v3-illu__t v3-illu__t--b"><div class="v3-img v3-img--art"></div></div>' +
-    '<div class="v3-illu__tag"><span class="v3-tag__hole"></span>؟</div><i class="v3-coin v3-fl" style="width:30px;height:30px;top:8px;left:40px"></i><i class="v3-coin v3-fl" style="width:18px;height:18px;bottom:30px;right:22px"></i>' +
-    '<i class="v3-spark" style="top:30px;right:60px"></i><i class="v3-spark" style="bottom:40px;left:30px;transform:scale(.6)"></i></div></div>';
+// ---------------------------------------------------------------- G01 home (§4, §5)
+const COMPARE_ART = `<div class="q-compare" aria-hidden="true"><span class="q-compare__t q-compare__t--a">${TAG}</span><span class="q-compare__x">${I.refresh}</span><span class="q-compare__t q-compare__t--b">${TAG}</span></div>`;
+function balance(b) {
+  if (b == null) return '<span class="q-bal is-unknown" aria-label="موجودی دیجی‌کوین نامعلوم">' + COIN + '<b>—</b></span>';
+  return `<span class="q-bal" role="img" aria-label="موجودی: ${fa(b)} دیجی‌کوین">${COIN}<b>${fa(b)}</b></span>`;
 }
-const HL = (h, p) => `<div class="v3-hl"><h1>${h}</h1><p>${p}</p></div>`;
-const HL_DEF = () => HL('گرون‌تره یا ارزون‌تر؟', INTRO);
-const HELP = `<button class="v3-link" data-act="guide">${ICO('help')}راهنمای بازی</button>`;
-function metaLine(b) {
-  if (!b.record) return '';
-  const best = b.bestCheckpoint;
-  return `<div class="v3-meta"><span>رکورد <b>${fa(b.record)}</b></span>${best ? `<i aria-hidden="true"></i><span class="v3-medal v3-medal--xs">${fa(best.requiredCorrect)}</span><span>بهترین عنوان <b>${esc(best.title)}</b></span>` : ''}</div>`;
+function pcard(p, n) {
+  const label = `${n === 0 ? 'کالای شروع' : 'نوبت ' + fa(n)}: ${esc(p.displayTitle)}${p.isLoss ? '، اینجا باختی' : ''}`;
+  const open = p.link ? ` data-act="open-product" data-link="${esc(p.link)}"` : ' disabled';
+  return `<button class="q-pcard${p.isLoss ? ' is-loss' : ''}" role="listitem"${open}${p.isLoss ? ' data-loss' : ''} aria-label="${label}">` +
+    `${img(p)}<span class="q-pcard__t">${title(p.displayTitle)}</span>${p.isLoss ? '<span class="q-pcard__loss">اینجا باختی</span>' : ''}</button>`;
 }
-function startPage(b, hl, cta, plays, pre = '', extra = '') {
-  return stage(ptop('قیمت‌شناس', 'بازگشت به اپ', 'exit-app', true) + illu() + hl +
-    `<div class="v3-panel v3-panel--end">${pre}${cta}<p class="v3-plays">${plays}</p>${metaLine(b)}${HELP}</div>`, extra, 'page');
+function history(m) {
+  const hs = m.historyState;
+  let body;
+  if (hs === 'none') body = '<p class="q-hist__empty">کالاهای اولین دستت اینجا می‌مونه</p>';
+  else if (hs === 'error') body = `<div class="q-hist__empty">${status('no', 'کالاهای دست قبلی بارگذاری نشد.', 'alert')}${BTN('q-btn--text', 'دوباره امتحان کن', ' data-act="history-retry"')}</div>`;
+  else if (!m.products) body = `<div class="q-hist__row" aria-busy="true">${Array(3).fill('<span class="q-pcard q-skel" aria-hidden="true"></span>').join('')}</div>`;
+  else body = `<div class="q-hist__row" data-hscroll="history" role="list" tabindex="0" aria-label="کالاهای دست قبلی به ترتیب نوبت">${m.products.items.map(pcard).join('')}</div>`;
+  return `<section class="q-hist" aria-labelledby="hist-t"><div class="q-hist__hd"><h2 id="hist-t">کالاهای دست قبلی</h2>${m.products && m.products.items.length > 2 ? '<span>بکش و ببین</span>' : ''}</div>${body}</section>`;
 }
-const playsLine = b => `<b>${fa(b.quota.playsLeft)} دست</b> از ${fa(b.quota.playsPerDay)} دست امروز باقی مونده`;
-
-export function vStart(v, m) {
-  // neutral loading: nothing of the start screen shows before we know whether the onboarding comes first
-  if (v === 'G01.LOADING') return stage('<div class="v3-wait v3-wait--boot" role="status" aria-label="در حال بارگذاری"><span class="v3-brand">قیمت‌شناس</span><span class="v3-spin" aria-hidden="true"></span></div>', '', 'page');
-  if (v === 'G01.ERROR') return stage(ptop('قیمت‌شناس', 'بازگشت به اپ', 'exit-app', true) + statecard('wifi', 'no', 'بارگذاری نشد', 'اطلاعات بازی دریافت نشد. اتصال اینترنت رو بررسی کن و دوباره امتحان کن.',
-    GOLD('تلاش دوباره', ' data-act="boot"', false) + BTN('v3-btn--outline v3-btn--block', 'بازگشت به اپ', ' data-act="exit-app"')), toastHTML(m.toast));
-  const b = m.boot, extra = (m.modal || '') + toastHTML(m.toast);
-  if (v === 'G01.QUOTA_EXHAUSTED') return startPage(b, HL('برای امروز کافیه!', `فردا با ${fa(b.quota.playsPerDay)} دست جدید برگرد.`),
-    status('', `دست‌های جدید تا <b dir="ltr" data-countdown>${untilInstant(m.untilReset)}</b> دیگه`, 'clock'), playsLine(b), '', extra);   // no disabled start button; CP-30
+/** The home's bottom area: part of the page (no scrim, no drag, no extra modal). v: the G01 state. */
+function homeSheet(v, m) {
+  const b = m.boot, q = b.quota;
+  const chances = `<p class="q-chances">شانس بازی: <b>${fa(q.playsLeft)}</b></p>`;
+  let cta, pre = '';
   if (v === 'G01.ACTIVE_RUN') {
-    const r = b.activeRun, c = r.checkpoint;
-    return startPage(b, HL('یه دست نیمه‌کاره داری', 'از همون‌جا ادامه بده؛ امتیازت هنوز سر جاشه.'), GOLD(PLAYI + 'ادامه دست', ' data-act="resume"'),
-      `این دست از سهمیه امروز کم شده؛ <b>${fa(b.quota.playsLeft)} دست</b> دیگه داری`, `<div class="v3-tile"><span class="v3-medal v3-medal--sm">${c ? fa(c.requiredCorrect) : '—'}</span><div><span>دست فعلی</span><b>${fa(r.score)} پاسخ درست${c ? '، چک‌پوینت ' + fa(c.requiredCorrect) : ''}</b></div></div>`, extra);
-  }
-  if (v === 'G01.OPERATION_PENDING') return startPage(b, HL_DEF(), BUSY('شروع بازی'), playsLine(b), status('', 'پرداخت قبلیت هنوز در حال بررسیه. دوباره کسر نمی‌شه؛ چند لحظه صبر کن.', null, true), extra);
-  if (v === 'G01.STARTING') return startPage(b, HL_DEF(), BUSY('شروع بازی'), playsLine(b), '', extra);
-  const o = b.activeRun && !b.activeRun.onThisDevice ? b.activeRun : null;
-  const note = o ? status('warn', `یه دست روی دستگاه دیگه‌ات بازه. با شروع دست جدید، اون دست با ${fa(o.score)} پاسخ درست تموم می‌شه${o.checkpoint ? ' و پاداش چک‌پوینتش برات ثبت می‌شه' : ''}.`, 'devices') : '';
-  const camp = b.campaign ? status('warn', `کمپین ویژه: با رسیدن به چک‌پوینت ${fa(b.campaign.checkpointRequiredCorrect)}، کد تخفیف ${money(b.campaign.codeAmountToman)} تومانی هم می‌گیری.`, 'info') : '';   // CP-33
-  return startPage(b, HL_DEF(), GOLD(PLAYI + 'شروع بازی', ' data-act="start"'), playsLine(b), camp + note, extra);
+    const r = b.activeRun;
+    pre = status('', `یه دست نیمه‌کاره داری با ${fa(r.score)} جواب درست؛ از همون‌جا ادامه بده.`, 'info');
+    cta = PRIMARY('ادامه دست', ' data-act="resume"', I.play);
+  } else if (v === 'G01.OPERATION_PENDING') {
+    pre = status('', 'پرداخت قبلیت هنوز در حال بررسیه. دوباره کسر نمی‌شه؛ چند لحظه صبر کن.', null, true);
+    cta = BUSY('شروع بازی');
+  } else if (v === 'G01.STARTING' || v === 'G01.REFRESHING') cta = BUSY('شروع بازی');
+  else if (v === 'G01.QUOTA_CHECKING') cta = `<button class="q-btn q-btn--primary" disabled aria-disabled="true" aria-busy="true"><span>در حال بررسی شانس بعدی...</span></button>`;
+  else if (v === 'G01.QUOTA_EXHAUSTED') cta = `<button class="q-btn q-btn--primary" disabled aria-disabled="true"><span>تا شانس بعدی <b dir="ltr" data-countdown>${m.untilReset}</b></span><i class="q-btn__i">${ICO('clock')}</i></button>`;
+  else if (m.offline) { pre = status('warn', 'اتصال برقرار نیست؛ برای شروع بازی به اینترنت وصل شو.', 'wifi'); cta = `<button class="q-btn q-btn--primary" disabled aria-disabled="true"><span>شروع بازی</span><i class="q-btn__i">${I.play}</i></button>`; }
+  else cta = PRIMARY('شروع بازی', ' data-act="start"', I.play);
+  return `<section class="q-homesheet" aria-label="شروع بازی">${COMPARE_ART}<h2>گرون‌تره یا ارزون‌تر؟</h2>${pre}${chances}${cta}</section>`;
 }
-
-// ---------------------------------------------------------------- G02 guide / onboarding spotlight
-/**
- * Spotlight over the demo scene: everything but the target is dimmed by the hole's own shadow; four blockers around
- * the hole (and one over it unless the step asks to tap the target) stop every touch outside the lesson. Geometry is
- * set by the controller after layout, on resize and on scroll.
- */
-export function tourOverlay(s) {
-  const dots = Array.from({ length: s.total }, (_, i) => `<i${i === s.index ? ' class="is-on"' : ''}></i>`).join('');
-  const close = s.closable ? `<button class="pe-tour__x" data-act="tour-close" aria-label="بستن راهنما">${ICO('x', 18)}</button>` : '';
-  const err = s.error ? `<p class="pe-tour__err" role="alert">${s.error}</p>` : '';
-  const btn = s.action ? `<button class="v3-btn v3-btn--gold v3-btn--block" data-act="${s.action}"${s.busy ? ' disabled aria-disabled="true" aria-busy="true"' : ''}>${s.busy ? '<span class="v3-spin" aria-hidden="true"></span>' : ''}${s.actionLabel}</button>` : '';
-  const prev = s.index > 0 && !s.final ? `<button class="v3-btn v3-btn--outline pe-tour__prev" data-act="tour-prev">قبلی</button>` : '';
-  return `<div class="pe-tour pe-modal${s.target ? '' : ' is-center'}" role="dialog" aria-modal="true" aria-labelledby="tour-t" aria-describedby="tour-d" data-step="${s.id}">` +
-    `<div class="pe-tour__hole" data-hole aria-hidden="true"></div>${['t', 'r', 'b', 'l'].map(k => `<div class="pe-tour__block" data-block="${k}"></div>`).join('')}` +
-    `${s.interact ? '' : '<div class="pe-tour__block" data-block="hole"></div>'}` +
-    `<div class="pe-tour__tip" data-tip>${close}<span class="pe-tour__n" aria-hidden="true">${fa(s.index + 1)} از ${fa(s.total)}</span><h2 id="tour-t">${s.title}</h2><p id="tour-d">${s.text}</p>${err}` +
-    `<div class="pe-tour__dots" aria-hidden="true">${dots}</div>${s.hint ? `<p class="pe-tour__hint">${ICO('info', 16)}${s.hint}</p>` : ''}<div class="pe-tour__btns">${btn}${prev}</div></div></div>`;
+export function vHome(v, m) {
+  const b = m.boot;
+  const top = `<header class="q-hdr q-hdr--home"><button class="q-iconbtn" data-act="exit-app" aria-label="بازگشت به اپ">${I.back}</button>` +
+    `<div class="q-brand"><span class="q-logo q-logo--s" aria-hidden="true">${TAG}</span><b>قیمت‌شناس</b></div><span class="q-flex"></span>${balance(m.balance)}` +
+    `<button class="q-guidebtn" data-act="guide">راهنمای بازی</button></header>`;
+  const record = `<section class="q-record" aria-label="بهترین رکورد: ${fa(b.record)} جواب درست در یک دست"><div><span>بهترین رکورد</span><b>${fa(b.record)}</b><small>جواب درست در یک دست</small></div>` +
+    '<img src="assets/trophy.webp" alt="" width="96" height="94" decoding="async"></section>';
+  const o = b.activeRun && !b.activeRun.onThisDevice ? b.activeRun : null;
+  const note = o ? status('warn', `یه دست روی دستگاه دیگه‌ات بازه. با شروع دست جدید، اون دست با ${fa(o.score)} جواب درست تموم می‌شه.`, 'devices') : '';
+  const camp = b.campaign ? status('', `کمپین ویژه: با رسیدن به ${fa(b.campaign.checkpointRequiredCorrect)} جواب درست، کد تخفیف ${money(b.campaign.codeAmountToman)} تومانی هم می‌گیری.`, 'info') : '';
+  return page('q-home', top + `<main class="q-home__scroll">${record}${m.productsOn ? history(m) : ''}${camp}${note}</main>` + homeSheet(v, m), (m.modal || '') + toastHTML(m.toast));
 }
 
 // ---------------------------------------------------------------- G01 daily reward modal
-const WD = ['ی', 'د', 'س', 'چ', 'پ', 'ج', 'ش'];   // getUTCDay(): Sunday … Saturday
+const WD = ['ی', 'د', 'س', 'چ', 'پ', 'ج', 'ش'], WDF = ['یکشنبه', 'دوشنبه', 'سه‌شنبه', 'چهارشنبه', 'پنجشنبه', 'جمعه', 'شنبه'];   // getUTCDay()
 /**
- * «جایزه‌ی روزانه». d: the server's daily reward view; ui: { phase: claimable | claiming | claimed | processing | slow |
- * error | delayed, message }. Opening it claims nothing; only «دریافت کن» does, and «دریافت کردی» appears only after the
- * server confirmed the credit.
+ * «جایزه‌ی روزانه». The 7 days keep the server's floating window and its dates; the first day of the window sits at the
+ * physical right (RTL order, §15). The only claim button sends one claim; on success the modal closes and the home shows
+ * (no second «دریافت شد» surface). ui.phase: claimable | claiming | processing | slow | error.
  */
 export function dailyModal(d, ui) {
   const days = d.days.map(x => {
-    const wd = WD[new Date(x.date + 'T12:00:00Z').getUTCDay()];
-    return `<li class="${x.attended ? 'is-on' : ''}${x.today ? ' is-today' : ''}"><span class="pe-day__c" aria-hidden="true">${x.attended ? I.check : ''}</span><span>${x.today ? 'امروز' : wd}</span></li>`;
+    const w = new Date(x.date + 'T12:00:00Z').getUTCDay();
+    const st = x.today ? (x.attended ? 'امروز، گرفته شده' : 'امروز') : x.attended ? 'گرفته شده' : 'غیرفعال';
+    return `<li class="${x.attended ? 'is-on' : ''}${x.today ? ' is-today' : ''}" aria-label="${WDF[w]}، ${st}"><span class="q-day__c" aria-hidden="true">${x.attended ? ICO('check', 16) : ''}</span><span aria-hidden="true">${x.today ? 'امروز' : WD[w]}</span></li>`;
   }).join('');
-  const amount = `<div class="pe-daily__rw">${COIN}<b>${fa(d.amount)}</b><span>دیجی‌کوین</span></div>`;
-  let body = '', btns = '';
   const p = ui.phase;
-  if (p === 'claimed') { body = status('ok', `${fa(d.amount)} دیجی‌کوین دریافت کردی.`, 'check'); btns = GOLD('بزن بریم', ' data-act="daily-close"', false); }
-  else if (p === 'claiming') btns = BUSY('دریافت کن', false);
-  else if (p === 'processing') { body = status('', 'در حال ثبت جایزه…', null, true); btns = BUSY('دریافت کن', false); }
-  else if (p === 'slow') { body = status('warn', 'ثبت جایزه بیشتر از همیشه طول کشیده. جایزه‌ات محفوظه؛ دوباره بررسی کن.', 'clock'); btns = GOLD('بررسی دوباره', ' data-act="daily-check"', false) + BTN('v3-btn--outline v3-btn--block', 'بعداً', ' data-act="daily-close"'); }
-  else if (p === 'error') { body = status('no', ui.message || 'اتصال برقرار نشد؛ جایزه‌ات محفوظه. دوباره امتحان کن.', 'alert', false, true); btns = GOLD('دوباره امتحان کن', ' data-act="daily-claim"', false) + BTN('v3-btn--outline v3-btn--block', 'بعداً', ' data-act="daily-close"'); }
-  else if (p === 'delayed') { body = status('warn', 'واریز با تأخیر انجام می‌شه.', 'clock'); btns = BTN('v3-btn--outline v3-btn--block', 'باشه', ' data-act="daily-close"'); }
-  else btns = GOLD('دریافت کن', ' data-act="daily-claim"', false);
+  let body = '', btns;
+  if (p === 'claiming') btns = BUSY('دریافت کن');
+  else if (p === 'processing') { body = status('', 'در حال ثبت جایزه…', null, true); btns = BUSY('دریافت کن'); }
+  else if (p === 'slow') { body = status('warn', 'ثبت جایزه بیشتر از همیشه طول کشیده. جایزه‌ات محفوظه؛ دوباره بررسی کن.', 'clock'); btns = PRIMARY('بررسی دوباره', ' data-act="daily-check"', I.refresh) + SECONDARY('بعداً', ' data-act="daily-close"'); }
+  else if (p === 'error') { body = status('no', ui.message || 'اتصال برقرار نشد؛ جایزه‌ات محفوظه. دوباره امتحان کن.', 'alert', false, true); btns = PRIMARY('دوباره امتحان کن', ' data-act="daily-claim"', I.refresh) + SECONDARY('بعداً', ' data-act="daily-close"'); }
+  else btns = PRIMARY('دریافت کن', ' data-act="daily-claim"');
   const closable = p !== 'claiming' && p !== 'processing';
-  return `<div class="v3-sheetwrap pe-modal pe-daily-wrap"><section class="v3-sheet pe-daily" role="dialog" aria-modal="true" aria-labelledby="daily-t" data-phase="${p}">` +
-    (closable && p !== 'claimed' ? `<button class="pe-daily__x" data-act="daily-close" aria-label="بستن">${ICO('x', 18)}</button>` : '') +
-    `<div class="pe-daily__streak"><b>${fa(d.streakDays)}</b><span>روز پشت‌سرهم</span></div><h2 id="daily-t">جایزه‌ی روزانه</h2>` +
-    `<ol class="pe-days" aria-label="روزهای حضور در هفته اخیر">${days}</ol>${amount}${body}<div class="v3-sheet__btns">${btns}</div></section></div>`;
+  return `<div class="q-scrim q-modal"><section class="q-sheet q-daily" role="dialog" aria-modal="true" aria-labelledby="daily-t" data-phase="${p}">` +
+    (closable ? `<button class="q-iconbtn q-sheet__x" data-act="daily-close" aria-label="بستن">${ICO('x', 20)}</button>` : '') +
+    `<div class="q-daily__streak"><b>${fa(d.streakDays)}</b><span>روز پشت‌سرهم</span></div><h2 id="daily-t">جایزه‌ی روزانه</h2>` +
+    `<ol class="q-days" aria-label="روزهای حضور در هفته اخیر">${days}</ol><p class="q-daily__rw">${COIN}<b>${fa(d.amount)}</b><span>دیجی‌کوین</span></p>${body}<div class="q-sheet__btns">${btns}</div></section></div>`;
 }
 
-// ---------------------------------------------------------------- G03–G06 gameplay
+// ---------------------------------------------------------------- G02 guide (§15) and onboarding (§14)
+const GUIDE_ART = {
+  compare: `<span class="q-gart q-gart--compare" aria-hidden="true"><i>${TAG}</i><i>${TAG}</i></span>`,
+  time: `<span class="q-gart" aria-hidden="true">${ICO('clock', 30)}</span>`,
+  badges: `<span class="q-gart q-gart--badges" aria-hidden="true">${BADGES.slice(0, 3).map(b => `<img src="${BADGE_SRC(b)}" alt="">`).join('')}</span>`,
+  cont: `<span class="q-gart" aria-hidden="true">${ICO('undo', 30)}</span>`,
+};
+export function vGuide(m) {
+  const c = m.config, cps = c.checkpoints, cr = c.continueRule;
+  const steps = cps.map(x => fa(x.requiredCorrect)), last = steps.pop();
+  const firstPaid = cps.findIndex(x => x.rewardAmount > 0);
+  const ordinal = ['اول', 'دوم', 'سوم', 'چهارم', 'پنجم'][firstPaid] || fa(firstPaid + 1) + 'م';
+  const sec = (art, h, p) => `<section class="q-gsec">${art}<div><h2>${h}</h2><p>${p}</p></div></section>`;
+  const body = sec(GUIDE_ART.compare, 'مقایسه قیمت', 'قیمت کالای اول معلومه. حدس بزن کالای دوم گرون‌تره یا ارزون‌تر.') +
+    sec(GUIDE_ART.time, `${fa(Math.round(c.inputMs / 1000))} ثانیه فرصت`, `برای هر مقایسه ${fa(Math.round(c.inputMs / 1000))} ثانیه وقت داری.`) +
+    sec(GUIDE_ART.badges, 'عنوان تازه بگیر', `با ${steps.join('، ')} و ${last} جواب درست، عنوان تازه می‌گیری${firstPaid >= 0 ? `؛ از چک‌پوینت ${ordinal} دیجی‌کوین هم داری` : ''}.`) +
+    (cr.enabled && cr.cap > 0 ? sec(GUIDE_ART.cont, 'همون دست رو ادامه بده', `اگر امکان ادامه داشته باشی، می‌تونی با ${fa(cr.cost)} دیجی‌کوین همون دست رو ادامه بدی.`) : '');
+  return page('q-guide', hdr('راهنمای قیمت‌شناس', 'guide-close', 'بستن راهنما') + `<main class="q-guide__body">${body}</main>` +
+    `<footer class="q-foot">${PRIMARY('فهمیدم', ' data-act="guide-close"', I.fwd)}</footer>`);
+}
+/** Onboarding page 1: a fixed sandbox of the game screen under a dimmed layer; the spotlight hole is placed by the controller. */
+export function vOnboard1(m, scene, step, steps, still) {
+  const s = steps[step];
+  const dots = steps.map((_, i) => `<i${i === step ? ' class="is-on"' : ''}></i>`).join('');
+  const nav = still ? `<div class="q-spot__nav"><button class="q-btn q-btn--text" data-act="spot-prev"${step === 0 ? L : ''}>قبلی</button><button class="q-btn q-btn--text" data-act="spot-next"${step === steps.length - 1 ? L : ''}>بعدی</button></div>` : '';
+  return `<div class="q-onb q-onb--1"><div class="q-onb__scene" inert aria-hidden="true">${scene}</div>` +
+    `<div class="q-spot" aria-hidden="true"><div class="q-spot__hole" data-hole></div></div>` +
+    `<div class="q-spot__tip" data-tip role="status" aria-live="polite"><h2>${s.title}</h2><p>${s.text}</p><span class="q-spot__dots" aria-hidden="true">${dots}</span>${nav}</div>` +
+    `<section class="q-onb__panel" aria-label="آموزش"><p class="q-onb__n">آموزش ${fa(1)} از ${fa(2)}</p>${m.error ? status('no', m.error, 'alert', false, true) : ''}<div class="q-onb__btns">` +
+    `${PRIMARY('بعدی', ' data-act="onb-next"', I.fwd)}${m.busy ? BUSY('رد کردن', 'q-btn--text') : BTN('q-btn--text', 'رد کردن', ' data-act="onb-skip"')}</div></section></div>`;
+}
+export function vOnboard2(m) {
+  const cps = m.config.checkpoints;
+  const grid = cps.map((c, i) => `<li><img src="${BADGE_SRC(badgeId(c, i))}" alt="" width="132" height="128"><b>${esc(c.title)}</b><span>${fa(c.requiredCorrect)} جواب درست</span></li>`).join('');
+  return page('q-onb q-onb--2', hdr('راهنمای بازی', 'onb-prev', 'قبلی') +
+    `<main class="q-onb2"><h1>باید رکورد بزنی</h1><p class="q-onb2__sub">هر چند تا سوالی که جواب بدی یه جایزه برات گذاشتیم!</p><ul class="q-badgegrid" aria-label="چک‌پوینت‌ها">${grid}</ul>` +
+    `<p class="q-onb2__note">پاسخ‌های درستت حساب می‌شن</p></main>` +
+    `<footer class="q-foot q-foot--row">${m.error ? status('no', m.error, 'alert', false, true) : ''}${m.busy ? BUSY('بزن بریم') : PRIMARY('بزن بریم', ' data-act="onb-done"', I.play)}${BTN('q-btn--text', 'قبلی', ' data-act="onb-prev"' + (m.busy ? L : ''))}</footer>`);
+}
+
+// ---------------------------------------------------------------- gameplay (§6, §7, §8, §10)
+/** Top bar: back at the right, the game name, the correct-answer count at the left. No balance (§1). */
+export function gameTop(score, backLocked) {
+  return `<header class="q-hdr q-hdr--game"><button class="q-iconbtn" data-act="back" aria-label="خروج از دست"${backLocked ? L : ''}>${I.back}</button><h1 class="q-hdr__t">قیمت‌شناس</h1>` +
+    `<div class="q-hdr__end"><span class="q-score" aria-live="polite"><b>${fa(score)}</b><small>جواب درست</small></span></div></header>`;
+}
+/** A coin stack for a reward amount: 1 coin, a small cluster, or a simple stack for 5 and more (§10); the number is beside it. */
+function coinStack(n) {
+  const layers = Math.min(3, Math.max(1, n >= 5 ? 3 : n >= 3 ? 2 : 1));
+  let s = '';
+  for (let i = layers - 1; i >= 0; i--) s += `<circle cx="${17 - i * 3.2}" cy="${17 - i * 3.2}" r="12" fill="#F2C14E" stroke="#C88A12" stroke-width="2"/>`;
+  return `<span class="q-stack"><svg viewBox="0 0 32 32" width="34" height="34" aria-hidden="true" focusable="false">${s}</svg><b>${fa(n)}</b></span>`;
+}
+/** Main progress bar (kept, §10): fills with the score; each checkpoint shows its real reward — the badge when it pays no coin. */
+export function track(score, cps) {
+  const last = cps.length ? cps[cps.length - 1].requiredCorrect : 1;
+  const f = Math.min(1, score / last);
+  const nodes = cps.map((c, i) => {
+    const ic = c.rewardAmount > 0 ? coinStack(c.rewardAmount) : `<img src="${BADGE_SRC(badgeId(c, i))}" alt="" width="34" height="33">`;
+    return `<li class="${c.requiredCorrect <= score ? 'is-done' : ''}" style="--x:${(100 * c.requiredCorrect / last).toFixed(2)}%"><span class="q-track__ic">${ic}</span><span class="q-track__n">${fa(c.requiredCorrect)}</span></li>`;
+  }).join('');
+  const next = cps.find(c => c.requiredCorrect > score);
+  const label = next ? `${fa(score)} جواب درست؛ چک‌پوینت بعدی با ${fa(next.requiredCorrect)} جواب درست${next.rewardAmount > 0 ? ` و ${fa(next.rewardAmount)} دیجی‌کوین` : ''}` : `${fa(score)} جواب درست؛ همه‌ی چک‌پوینت‌ها رو گرفتی`;
+  return `<div class="q-track" role="progressbar" aria-valuemin="0" aria-valuemax="${last}" aria-valuenow="${Math.min(score, last)}" aria-label="${label}">` +
+    `<div class="q-track__line"><i style="--f:${f.toFixed(4)}"></i></div><ol aria-hidden="true">${nodes}</ol></div>`;
+}
+/**
+ * Timer above the decision area (§7): large fixed-width number on a contrasting plate with a draining line.
+ * mode: idle (before «نشان بده») · run · low (last 3 s) · zero (visible window over, server recording it) · busy (answer
+ * sent) · done (answered; the verdict lives in the decision area).
+ */
+export function timer(o) {
+  const mode = o.mode, n = mode === 'idle' ? fa(10) : mode === 'zero' ? fa(0) : o.t;
+  const lab = { idle: 'ثانیه وقت داری', run: 'ثانیه وقت داری', low: 'وقت داره تموم می‌شه', zero: 'زمان تموم شد', busy: 'در حال بررسی پاسخ...', done: 'جوابت ثبت شد' }[mode];
+  const num = mode === 'busy' ? SPIN : mode === 'done' ? `<span class="q-timer__ok">${ICO('check', 26)}</span>` : `<b class="q-timer__n">${n}</b>`;
+  const live = mode === 'run' || mode === 'low';
+  return `<div class="q-timer is-${mode}" data-tour="timer" ${live ? 'role="timer" data-timer' : 'role="status"'} aria-label="${mode === 'zero' || mode === 'done' ? lab : mode === 'busy' ? 'در حال بررسی پاسخ' : `${n} ${lab}`}" style="--p:${o.p == null ? 1 : o.p}">` +
+    `${num}<span class="q-timer__l">${lab}</span><i class="q-timer__bar" aria-hidden="true"></i></div>`;
+}
+export function refCard(card, strip) {
+  const k = keyOf(card);
+  return `<article class="q-ref${strip ? ' q-ref--strip' : ''}" aria-label="کالای اول، ${money(card.price)} تومان"${mk('card:' + k, 'frame')} data-tour="first">${img(card, true)}` +
+    `<div class="q-ref__b"><span class="q-label">کالای اول</span><h2 class="q-ref__t"${mk('ttl:' + k, 'text')}>${title(card.displayTitle)}</h2>${price(card.price, '', mk('prc:' + k, 'text'))}</div></article>`;
+}
+/** Before «نشان بده»: the invitation card; the comparison product is chosen by the server only after the tap. */
+export function revealCard(state) {
+  const busy = state === 'busy', failed = state === 'failed', off = state === 'off';
+  const t = failed ? 'کالا آماده نشد' : busy ? 'کالای بعدی آماده می‌شه…' : 'آماده‌ای مقایسه کنی؟';
+  const p = failed ? 'امتیاز و زمانت سالمه؛ دوباره امتحان کن.' : off ? 'اتصال قطع شد. هنوز سؤالی شروع نشده؛ دستت محفوظه.' : 'کالای بعدی رو ببین و حدس بزن';
+  const b = busy ? BUSY('نشان بده') : off ? `<button class="q-btn q-btn--primary" disabled aria-disabled="true"><span>در انتظار اتصال…</span></button>`
+    : PRIMARY(failed ? 'دوباره امتحان کن' : 'نشان بده', ' data-act="reveal" data-tour="reveal"', failed ? I.refresh : I.play);
+  return `<section class="q-invite${failed ? ' is-failed' : ''}"${mk('slot', 'fade')} aria-labelledby="inv-t"><span class="q-invite__tag" aria-hidden="true">${TAG}</span><h2 id="inv-t">${t}</h2><p>${p}</p>${b}</section>`;
+}
+/** Comparison product. Its price is never in the page before the answer; afterwards the server's revealed price fills the same row. */
+export function cmpCard(card, st, revealedPrice, slow) {
+  const k = keyOf(card);
+  const cls = { hidden: '', ok: ' is-ok', no: ' is-no', time: ' is-time' }[st];
+  const row = st === 'hidden'
+    ? `<p class="q-price q-price--hidden"${mk('prc:' + k, 'text')}><b>؟</b><small>تومان</small><span class="pe-sr">قیمت مخفی</span></p>`
+    : price(revealedPrice, ' q-price--reveal', mk('prc:' + k, 'text'));
+  const hint = slow ? '<p class="q-cmp__hint">عکس در راهه؛ از روی اسم هم می‌تونی جواب بدی.</p>' : '';
+  return `<article class="q-cmp${cls}" aria-label="کالای دوم${st === 'hidden' ? '، قیمت مخفی' : `، ${money(revealedPrice)} تومان`}"${mk('card:' + k, 'frame')} data-tour="second">` +
+    `<span class="q-label">کالای دوم</span><h2 class="q-cmp__t"${mk('ttl:' + k, 'text')}>${title(card.displayTitle)}</h2>${img(card, true, st === 'hidden' ? 'q' : '')}${hint}${row}</article>`;
+}
+/**
+ * Decision area: the prompt (or, after the server's verdict, the verdict in the same place) and the two answers at a
+ * fixed size and position. st: on · off · pending · ok · no · truth. Text marks («انتخاب تو», «درست») never rely on colour.
+ */
+export function decide(st, side, line, refPrice) {
+  const A = { cls: '', a: ' data-act="ans-higher"', i: I.up, m: '' }, B = { cls: '', a: ' data-act="ans-lower"', i: I.down, m: '' };
+  const me = side === 'higher' ? A : B, ot = side === 'higher' ? B : A;
+  const ok = `<span class="q-ab__m">${ICO('check', 18)}</span>`, no = `<span class="q-ab__m">${ICO('x', 18)}</span>`;
+  if (st === 'off') A.a = B.a = L;
+  else if (st === 'pending') { me.cls = ' is-picked'; me.a = ' aria-pressed="true" aria-busy="true"' + L; me.i = SPIN; ot.cls = ' is-dim'; ot.a = L; }
+  else if (st === 'ok') { me.cls = ' is-ok'; me.a = ' aria-pressed="true"' + L; me.i = ok; me.m = 'انتخاب تو، درست'; ot.cls = ' is-dim'; ot.a = L; }
+  else if (st === 'no') { me.cls = ' is-no'; me.a = ' aria-pressed="true"' + L; me.i = no; me.m = 'انتخاب تو، غلط'; ot.cls = ' is-truth'; ot.a = L; ot.i = ok; ot.m = 'جواب درست'; }
+  else if (st === 'truth') { me.cls = ' is-truth'; me.a = L; me.i = ok; me.m = 'جواب درست'; ot.cls = ' is-dim'; ot.a = L; }
+  const rp = st === 'on' && refPrice ? money(refPrice) : '';
+  const btn = (o, w) => `<button class="q-ab${o.cls}"${o.a}${rp ? ` aria-label="${w} از ${rp} تومان"` : ''}><span>${w}${o.m ? `<small class="pe-sr">، ${o.m}</small>` : ''}</span><i class="q-ab__i">${o.i}</i></button>`;
+  return `<div class="q-decide"${mk('decide', 'fade')}>${line}<div class="q-ans" role="group" aria-label="پاسخ" data-tour="answers">${btn(A, 'گرون‌تره')}${btn(B, 'ارزون‌تره')}</div></div>`;
+}
+export const prompt = (text, muted) => `<p class="q-prompt${muted ? ' is-muted' : ''}">${text}</p>`;
+export function verdict(k, t, sub) {
+  const ic = { ok: 'check', no: 'x', time: 'clock' }[k];
+  return `<p class="q-verdict q-verdict--${k}" role="status"><span class="q-verdict__i" aria-hidden="true">${ICO(ic, 18)}</span><b>${t}</b>${sub ? `<span>${sub}</span>` : ''}</p>`;
+}
+export const pill = (t, ic, btn) => `<p class="q-pill" role="status">${ICO(ic, 16)}<span>${t}</span>${btn || ''}</p>`;
+export const game = (top, trk, tmr, main, dec, extra, toast) => page('q-game', top + trk + tmr + `<main class="q-game__main">${main}</main>` + (dec || ''), (extra || '') + toastHTML(toast));
+
 export function leaveSheet(m) {
   if (!m.leave) return '';
-  const c = m.checkpoint;
-  const txt = `دست با ${fa(m.score)} پاسخ درست تموم می‌شه و دیگه نمی‌تونی ادامه بدی.${c ? ` پاداش چک‌پوینت ${fa(c.requiredCorrect)} (${fa(c.rewardAmount)} دیجی‌کوین) برات می‌مونه.` : ''}`;
+  const txt = `دست با ${fa(m.score)} جواب درست تموم می‌شه و دیگه نمی‌تونی ادامه بدی.${m.checkpoint ? ' جایزه‌ی چک‌پوینت‌هایی که گرفتی سر جاشه.' : ''}`;
   return sheet('از این دست خارج می‌شی؟', txt, m.questionOpen ? status('warn', 'زمان سؤال متوقف نمی‌شه.', 'clock') : '',
-    BTNS(GOLD('ادامه بازی', ' data-act="leave-no"', false), BTN('v3-btn--danger v3-btn--block', 'خروج و پایان دست', ' data-act="leave-yes"')), '', ['warn', 'alert']);
-}
-/**
- * G04 checkpoint celebration, mounted ONCE per checkpoint and run outside the re-rendered screen (the duplicate
- * celebration was the screen re-render rebuilding this overlay and replaying its entrance). Copy (brief 2026-10-20):
- * «[نام] رو گرفتی.» · «[مقدار] تا دیجی‌کوین دریافت کردی.» only when the grant is confirmed — under the existing rule the
- * reward is paid at the end of the run, so during the run the approved R-17 lines show instead · «هدف بعدی: …».
- */
-export function cpOverlay(c, next, index, confirmed, guardMs, autoMs) {
-  const reward = confirmed ? `<p class="v3-cp__rw2">${COIN}<span>${fa(c.rewardAmount)} تا دیجی‌کوین دریافت کردی.</span></p>`
-    : `<p class="v3-cp__rw2">${COIN}<span>پاداش فعلی: ${fa(c.rewardAmount)} دیجی‌کوین<small>واریز در پایان دست</small></span></p>`;
-  return `<div class="v3-cp" role="dialog" aria-modal="true" aria-labelledby="cp-t" aria-describedby="cp-rw" style="--guard:${guardMs}ms"><div class="v3-burst" aria-hidden="true"></div>${confetti(26, 7)}` +
-    `<div class="v3-cp__in"><div class="v3-cp__char" aria-hidden="true">${character(c.badgeAssetId, index)}</div>` +
-    `<h2 class="v3-cp__t" id="cp-t">${esc(c.title)} رو گرفتی.</h2><div id="cp-rw">${reward}` +
-    `${next ? `<p class="v3-cp__nx">هدف بعدی: ${esc(next.title)} با ${fa(next.requiredCorrect)} جواب درست</p>` : ''}</div></div>` +
-    `<button class="v3-cp__go" data-act="cp-go" aria-disabled="true">برای ادامه، هر جای صفحه بزن</button>` +   // CP-35 instruction (UX brief), proposed
-    `<div class="v3-cp__auto" aria-hidden="true"><i data-cpauto style="transition:transform ${autoMs}ms linear"></i></div></div>`;
-}
-export function revealRow(t, text, btn, attr) {
-  return `<div class="v3-revealrow"${mk('reveal', 'fade')}><span class="v3-revealrow__tag" aria-hidden="true"><i></i>؟</span><div class="v3-revealrow__t"><b>${t}</b>${text ? `<span>${text}</span>` : ''}</div>` +
-    `<button class="v3-btn v3-btn--gold v3-btn--block v3-btn--xl" data-tour="reveal"${attr}>${btn}</button></div>`;
-}
-export function offerText(price, score, cp) {
-  const pr = `<b class="v3-offer__p">${money(price)} تومان</b>`;
-  if (!score) return `این کالا ${pr} بود. با ادامه، دست ادامه پیدا می‌کنه.`;   // CP-27 (R-58)
-  return `این کالا ${pr} بود. با ادامه، ${fa(score)} پاسخ درست${cp ? ` و چک‌پوینت ${fa(cp.requiredCorrect)}` : ''} حفظ می‌شه.`;   // CP-19 (approved)
+    PRIMARY('ادامه بازی', ' data-act="leave-no"', I.fwd) + BTN('q-btn--danger', 'خروج و پایان دست', ' data-act="leave-yes"'), ['warn', 'alert']);
 }
 
-// ---------------------------------------------------------------- G07 End Screen, G09 share
-export function codeCard(c, codeState) {
-  const exp = c.expiresAt ? new Intl.DateTimeFormat('fa-IR', { month: 'long', day: 'numeric', timeZone: 'Asia/Tehran' }).format(new Date(c.expiresAt)) : '';
-  const body = c.status === 'pending' ? '<div class="v3-code__val"><span class="v3-spin" aria-hidden="true"></span><span>در حال صدور کد…</span></div><p>اگه طول کشید، کد بعداً در کدهای تخفیف حسابت هم پیدا می‌شه.</p>'
-    : `<div class="v3-code__val"><b dir="ltr">${esc(c.code)}</b>${codeState === 'copied' ? `<button class="v3-btn v3-btn--soft v3-code__copy" aria-live="polite" data-act="copy">${ICO('check', 18)}کپی شد</button>` : '<button class="v3-btn v3-btn--soft v3-code__copy" data-act="copy">کپی کد</button>'}</div><p>${exp ? `اعتبار تا ${exp}. ` : ''}${esc(c.terms)}</p>`;
-  return `<section class="v3-code" aria-label="کد تخفیف جایزه"><div class="v3-code__hd"><b>کد تخفیف ${money(c.amountToman)} تومانی</b><span class="v3-chip">جایزه کمپین</span></div>${body}</section>`;
-}
-export function resultId(R) {
-  if (!R) return 'G07.LOADING';
-  if (R.campaignCode && R.campaignCode.status === 'sold_out') return 'G07.CAMPAIGN_CODE.SOLD_OUT';
-  if (R.campaignCode) return R.codeState === 'copied' ? 'G07.CAMPAIGN_CODE.COPIED' : R.campaignCode.status === 'pending' ? 'G07.CAMPAIGN_CODE.PENDING' : 'G07.CAMPAIGN_CODE';
-  if (R.checkpointReward && R.checkpointReward.status === 'delayed') return 'G07.REWARD_DELAYED';
-  if (R.reason === 'left') return 'G07.LEFT_RUN';
-  if (!R.checkpoint) return 'G07.NO_CHECKPOINT';
-  return 'G07.STANDARD';
-}
-/** End Screen header: share (icon only) at the physical top-right, title, Back at the physical top-left. */
-function rtop(m, shareOn) {
-  const share = !shareOn ? '<span class="v3-top__end" aria-hidden="true"></span>'
-    : m.shareBusy ? '<button class="v3-round" aria-label="در حال آماده‌سازی تصویر اشتراک" disabled aria-disabled="true" aria-busy="true"><span class="v3-spin" aria-hidden="true"></span></button>'
-      : `<button class="v3-round" aria-label="اشتراک‌گذاری نتیجه" data-act="share">${ICO('share', 22)}</button>`;
-  return `<div class="v3-top v3-top--result">${share}<span class="v3-brand v3-brand--sm">نتیجه دست</span><button class="v3-round v3-round--l" aria-label="بازگشت به صفحه شروع" data-act="to-start">${I.back}</button></div>`;
-}
-/** History card: chronological turn, the product, the price in the game, and what happened — never a fabricated answer. */
-function hcard(p, n) {
-  const res = p.role === 'reference' ? ['start', 'کالای شروع', '']
-    : p.result === 'correct' ? ['ok', 'درست', I.check] : p.result === 'wrong' ? ['no', 'اشتباه', '✕'] : p.result === 'timeout' ? ['time', 'وقت تموم شد', I.clock] : ['none', 'بی‌پاسخ', ''];
-  const price = p.gamePrice == null ? '<b>—</b>' : `<b>${money(p.gamePrice)}</b><small>تومان</small>`;
-  return `<article class="v3-hcard${p.isLoss ? ' is-loss' : ''}" role="listitem" data-qid="${esc(p.questionId || 'start')}" data-turn="${n}"${p.isLoss ? ' data-loss' : ''} aria-label="${n === 0 ? 'کالای شروع' : 'نوبت ' + fa(n)}: ${esc(p.displayTitle)}، ${res[1]}">` +
-    `${p.isLoss ? '<span class="v3-hcard__loss">اینجا باختی</span>' : ''}<span class="v3-hcard__res v3-hcard__res--${res[0]}">${res[2] ? `<i aria-hidden="true">${res[2]}</i>` : ''}${res[1]}</span>` +
-    `${img(p)}<h3>${title(p.displayTitle)}</h3><div class="v3-hcard__p">${price}</div>` +
-    `<button class="v3-open" data-act="open-product" data-link="${esc(p.link)}" data-id="${esc(p.productId)}" aria-label="مشاهده کالا: ${esc(p.displayTitle)}">مشاهده کالا ${ICO('ext', 14)}</button></article>`;   // CP-28
-}
-function history(m) {
-  const P = m.products, hs = m.historyState;
-  let body;
-  if (hs === 'error') body = `<div class="v3-hist__msg">${status('no', 'کالاهای این دست بارگذاری نشد.', 'alert')}${BTN('v3-btn--soft', 'دوباره امتحان کن', ' data-act="history-retry"')}</div>`;
-  else if (!P) body = `<div class="v3-hist__scroll" aria-busy="true">${Array(3).fill('<div class="v3-hcard v3-hcard--skel" aria-hidden="true"><div class="v3-img v3-skel v3-skel--card"></div><span class="v3-skel v3-skel--card"></span><span class="v3-skel v3-skel--card"></span></div>').join('')}</div>`;
-  else body = `<div class="v3-hist__scroll" data-hscroll="history" role="list" tabindex="0" aria-label="کالاهای این دست به ترتیب نوبت">${P.items.map((p, i) => hcard(p, i)).join('')}</div>`;
-  return `<section class="v3-hist" data-hist-state="${hs}" aria-labelledby="hist-t"><div class="v3-hist__hd"><h2 id="hist-t">کالاهای این دست</h2><span>قیمت‌ها مربوط به زمان بازی‌اند</span></div>${body}</section>`;
-}
+// ---------------------------------------------------------------- G04 checkpoint celebration (§10)
 /**
- * G07 End Screen (brief 2026-10-20): a compact summary (count, checkpoint, the reward amount; «دریافت کردی» only once the
- * credit is confirmed), one status line, the campaign code when there is one, and the run's product history. No record,
- * no settlement ticks, no «دوباره بازی کن», no bottom share button.
+ * Mounted once per (run, checkpoint) outside the re-rendered screen. Badge, the title earned, the fixed comparison copy,
+ * «{n} جواب درست دادی», the reward line only for a paying checkpoint, and one «ادامه بده». No countdown, no automatic
+ * continue, no second «دریافت» step: the reward was registered by the server with the answer that crossed the line.
  */
-export function vResult(m) {
-  const R = m.result, F = m.config.features || {}, SH = F.share !== false, P = F.products !== false;
-  if (!R) return stage(rtop(m, false) + `<div class="v3-rsum" aria-busy="true"><div class="v3-rsum__score"><b>${fa(m.lastScore || 0)}</b><span>پاسخ درست</span></div>${status('', 'در حال ثبت نتیجه…', null, true)}</div>`, '', 'page result');
-  const cp = R.checkpoint, cr = R.checkpointReward, first = m.config.checkpoints[0];
-  const cpLine = cp ? `<div class="v3-rsum__cp"><span class="v3-rsum__char" aria-hidden="true">${character(cp.badgeAssetId, m.config.checkpoints.findIndex(x => x.checkpointId === cp.checkpointId))}</span><div><span>چک‌پوینت</span><b>${esc(cp.title)}</b></div></div>`
-    : `<div class="v3-rsum__cp v3-rsum__cp--none"><span class="v3-medal v3-medal--none v3-medal--sm"><span>—</span></span><div><span>هنوز چک‌پوینتی نگرفتی</span><b>اولی با ${fa(first ? first.requiredCorrect : 3)} پاسخ درست</b></div></div>`;
-  const amount = cr && cr.amount > 0 ? cr.amount : 0;
-  const rw = !amount ? '' : cr.status === 'succeeded' ? `<p class="v3-rsum__rw">${COIN}<span>${fa(amount)} تا دیجی‌کوین دریافت کردی.</span></p>`
-    : `<p class="v3-rsum__rw">${COIN}<span>پاداش این دست: ${fa(amount)} دیجی‌کوین</span></p>`;
-  let st = '';
-  if (cr && cr.status === 'delayed') st = status('warn', 'واریز با تأخیر انجام می‌شه.', 'clock');   // R-24: on the result only
-  else if (R.reason === 'game_off') st = status('', 'بازی موقتاً متوقف شد؛ پاداش بالاترین چک‌پوینتت ثبت شد.', 'info');
-  else if (R.continueLimitUsed) st = status('', 'فرصت ادامه این دست رو قبلاً استفاده کردی.', 'info');   // CP-24
-  else if (R.noOfferReason === 'no_funds') st = status('', 'برای ادامه دیجی‌کوین کافی نداشتی.', 'info');   // CP-32
-  const nx = R.nextGoal;
-  if (!st && nx && nx.remaining <= 2 && R.reason !== 'no_products') st = status('', `فقط ${fa(nx.remaining)} پاسخ تا ${esc(nx.title)} (${fa(nx.reward)} دیجی‌کوین) کم داشتی.`, 'info');   // CP-25
-  const out = R.campaignCode && R.campaignCode.status === 'sold_out' ? status('', 'کدهای تخفیف این کمپین تموم شد؛ پاداش دیجی‌کوینت سر جاشه.', 'info') : '';   // CP-31
-  const code = R.campaignCode && R.campaignCode.status !== 'sold_out' ? codeCard(R.campaignCode, R.codeState) : '';
-  const left = R.reason === 'left' ? '<span class="v3-flag-left">از دست خارج شدی</span>' : '';
-  const tst = m.toast && m.toast.page ? toastHTML(m.toast) : '';
-  return stage(rtop(m, SH) + `<div class="v3-rsum" aria-live="polite">${left}<div class="v3-rsum__score"><b>${fa(R.score)}</b><span>پاسخ درست</span></div>${cpLine}${rw}</div>` +
-    `<div class="v3-rpanel">${out}${st}${code}${P ? history(m) : ''}</div>`, (m.shareSheet || '') + tst, 'page result');
+export function cpOverlay(c, index, reward) {
+  const head = c.comparisonPercent ? `از ${fa(c.comparisonPercent)} درصد آدما باهوش‌تری!` : `${esc(c.title)} رو گرفتی!`;
+  const amount = c.rewardAmount > 0 ? c.rewardAmount : 0;
+  const late = reward && reward.status === 'delayed' ? '<small>واریزش کمی طول می‌کشه</small>' : '';
+  return `<div class="q-cp" role="dialog" aria-modal="true" aria-labelledby="cp-t" aria-describedby="cp-d"><div class="q-cp__in">` +
+    `<img class="q-cp__badge" src="${BADGE_SRC(badgeId(c, index))}" alt="" width="240" height="232"><p class="q-cp__name">${esc(c.title)}</p>` +
+    `<h2 class="q-cp__h" id="cp-t">${head}</h2><p class="q-cp__n" id="cp-d">${fa(c.requiredCorrect)} جواب درست دادی</p>` +
+    (amount ? `<p class="q-cp__rw">${COIN}<span>${fa(amount)} دیجی‌کوین جایزه</span>${late}</p>` : '') +
+    `</div><div class="q-foot">${PRIMARY('ادامه بده', ' data-act="cp-go"', I.fwd)}</div></div>`;
 }
-export function shareAsset(s) {   // no player name (R-12); no streak (it lives in the daily reward modal only)
-  return `<div class="v3-share" role="img" aria-label="تصویر اشتراک: ${fa(s.score)} پاسخ درست"><div class="v3-burst v3-burst--gold" aria-hidden="true" style="top:42%"></div>` +
-    `<div><div class="v3-share__brand">${esc(s.gameName)}</div><div class="v3-share__sub">بازی گرون‌تره یا ارزون‌تر</div></div>` +
-    `<div><div class="v3-share__n">${fa(s.score)}</div><div class="v3-share__l">پاسخ درست در یک دست</div></div>` +
-    (s.checkpointTitle ? `<div class="v3-share__card"><span class="v3-medal"><span>✓</span></span><div><span>آخرین عنوان</span><b>${esc(s.checkpointTitle)}</b></div></div>` : '') +
-    '<div class="v3-share__foot">تو چندتا می‌زنی؟</div></div>';
+
+// ---------------------------------------------------------------- G05/G06 loss and continue (§11, §12)
+/**
+ * One surface for the result of a miss and the continue of the same run (replaces the old offer sheet and End Screen).
+ * m: { reason: wrong|timeout, score, best, cp (highest of THIS run) , cpIndex, action: html of the continue area, code }.
+ */
+export function vLoss(m) {
+  const cp = m.cp;
+  const badge = cp ? `<img class="q-loss__badge" src="${BADGE_SRC(badgeId(cp, m.cpIndex))}" alt="" width="200" height="194">` : `<span class="q-loss__badge">${NEUTRAL}</span>`;
+  const sub = m.reason === 'timeout' ? 'زمانت تموم شد' : m.reason === 'wrong' ? 'این بار قیمت رو درست حدس نزدی' : '';
+  const stats = `<dl class="q-stats"><div><dt>امتیاز</dt><dd>${fa(m.score)}</dd></div><div><dt>بهترین امتیاز</dt><dd>${fa(m.best)}</dd></div>` +
+    `<div><dt>عنوان</dt><dd class="q-stats__t">${cp ? esc(cp.title) : 'هنوز عنوانی نگرفتی'}</dd></div></dl>`;
+  const pct = cp && cp.comparisonPercent ? `<h2 class="q-loss__pct"><em>تو بهتر از ${fa(cp.comparisonPercent)} درصد</em> دیجی‌کالایی‌ها بودی!</h2>` : `<h2 class="q-loss__pct q-loss__pct--plain">این دست ${fa(m.score)} جواب درست دادی</h2>`;
+  return page('q-loss', `<header class="q-hdr q-hdr--bare"><button class="q-iconbtn" data-act="loss-home" aria-label="صفحه اصلی"${m.homeLocked ? L : ''}>${I.back}</button></header>` +
+    `<main class="q-loss__main">${badge}<h1 class="q-loss__h">باختی!</h1>${sub ? `<p class="q-loss__sub">${sub}</p>` : ''}${stats}${pct}${m.code || ''}</main>` +
+    `<footer class="q-foot q-loss__act">${m.action}${m.homeLocked ? `<button class="q-btn q-btn--secondary" disabled aria-disabled="true"><span>صفحه اصلی</span><i class="q-btn__i">${I.home}</i></button>` : SECONDARY('صفحه اصلی', ' data-act="loss-home"', I.home)}</footer>`, toastHTML(m.toast));
+}
+export function codeCard(c, copied) {
+  const body = c.status === 'pending' ? `<p class="q-code__val">${SPIN}<span>در حال صدور کد…</span></p>`
+    : `<p class="q-code__val"><b dir="ltr">${esc(c.code)}</b>${BTN('q-btn--text', copied ? 'کپی شد' : 'کپی کد', ' data-act="copy"')}</p>`;
+  return `<section class="q-code" aria-label="کد تخفیف جایزه"><b>کد تخفیف ${money(c.amountToman)} تومانی</b>${body}<small>${esc(c.terms || '')}</small></section>`;
 }
 
 // ---------------------------------------------------------------- G10 connection, G11 unavailable
 export function vSystem(v, m) {
-  const pg = (ic, k, t, p, a) => stage(ptop('قیمت‌شناس', 'بازگشت به اپ', 'exit-app', true) + statecard(ic, k, t, p, a), toastHTML(m.toast));
+  const pg = (ic, k, t, p, a) => page('q-sys', hdr('', 'exit-app', 'بازگشت به اپ') + statecard(ic, k, t, p, a), toastHTML(m.toast));
   const R = m.ended || {};
-  const cpTxt = R.checkpoint ? ` و پاداش چک‌پوینت ${fa(R.checkpoint.requiredCorrect)}` : '';
-  if (v === 'G10.RESUMING') return stage(ptop('قیمت‌شناس', 'بازگشت به اپ', 'exit-app', true) + '<div class="v3-wait" role="status"><span class="v3-spin" aria-hidden="true"></span><h2>برگشتی!</h2><p>داریم آخرین وضعیت دستت رو از سرور می‌گیریم…</p></div>');
-  if (v === 'G10.INACTIVITY_END') return pg('clock', 'warn', 'این دست تموم شد', `بیشتر از ۳ دقیقه بین سؤال‌ها کاری انجام نشد. دستت با ${fa(R.score || 0)} پاسخ درست${cpTxt} ثبت شد.`, GOLD('دیدن نتیجه', ' data-act="show-result"', false));
-  if (v === 'G11.GAME_OFF') return pg('power', '', 'بازی موقتاً در دسترس نیست', m.playerMessage ? esc(m.playerMessage) : 'در حال به‌روزرسانی هستیم. کمی بعد دوباره سر بزن.', BTN('v3-btn--outline v3-btn--block', 'بازگشت به اپ', ' data-act="exit-app"'));
-  if (v === 'G11.AUTH_ERROR') return pg('user', 'no', 'ورود انجام نشد', 'برای بازی باید وارد حساب دیجی‌کالا باشی. از داخل اپ دوباره وارد شو.', GOLD('بازگشت به اپ', ' data-act="exit-app"', false));
-  if (v === 'G11.SERVICE_ERROR') return pg('alert', 'no', 'یه مشکلی پیش اومد', 'سرویس بازی الان جواب نمی‌ده. امتیاز و دست‌هات محفوظه؛ چند لحظه دیگه دوباره امتحان کن.', GOLD('تلاش دوباره', ' data-act="boot"', false) + BTN('v3-btn--outline v3-btn--block', 'بازگشت به اپ', ' data-act="exit-app"'));
-  if (v === 'G11.OTHER_DEVICE') return pg('devices', '', 'این دست تموم شد', `روی دستگاه دیگه‌ای دست جدید شروع کردی. این دست با ${fa(R.score || 0)} پاسخ درست ثبت شد${R.checkpoint ? ' و پاداش چک‌پوینتش برات می‌مونه' : ''}.`, GOLD('دیدن نتیجه', ' data-act="show-result"', false) + BTN('v3-btn--outline v3-btn--block', 'بازگشت به شروع', ' data-act="boot"'));
-  if (v === 'G11.BLOCKED') return pg('lock', 'no', 'بازی غیرفعال شده است', '', BTN('v3-btn--outline v3-btn--block', 'بازگشت به اپ', ' data-act="exit-app"'));   // exact copy, no support link (R-61)
+  const HOME = SECONDARY('صفحه اصلی', ' data-act="home"', I.home);
+  if (v === 'G10.RESUMING') return page('q-sys', hdr('', 'exit-app', 'بازگشت به اپ') + `<div class="q-state" role="status">${SPIN}<h2>برگشتی!</h2><p>داریم آخرین وضعیت دستت رو از سرور می‌گیریم…</p></div>`);
+  if (v === 'G10.INACTIVITY_END') return pg('clock', 'warn', 'این دست تموم شد', `بیشتر از ۳ دقیقه بین سؤال‌ها کاری انجام نشد. دستت با ${fa(R.score || 0)} جواب درست ثبت شد.`, PRIMARY('صفحه اصلی', ' data-act="home"', I.home));
+  if (v === 'G11.GAME_OFF') return pg('power', '', 'بازی موقتاً در دسترس نیست', m.playerMessage ? esc(m.playerMessage) : 'در حال به‌روزرسانی هستیم. کمی بعد دوباره سر بزن.', SECONDARY('بازگشت به اپ', ' data-act="exit-app"'));
+  if (v === 'G11.AUTH_ERROR') return pg('user', 'no', 'ورود انجام نشد', 'برای بازی باید وارد حساب دیجی‌کالا باشی. از داخل اپ دوباره وارد شو.', PRIMARY('بازگشت به اپ', ' data-act="exit-app"'));
+  if (v === 'G11.SERVICE_ERROR') return pg('alert', 'no', 'یه مشکلی پیش اومد', 'سرویس بازی الان جواب نمی‌ده. امتیاز و دست‌هات محفوظه؛ چند لحظه دیگه دوباره امتحان کن.', PRIMARY('تلاش دوباره', ' data-act="boot"', I.refresh) + SECONDARY('بازگشت به اپ', ' data-act="exit-app"'));
+  if (v === 'G11.OTHER_DEVICE') return pg('devices', '', 'این دست تموم شد', `روی دستگاه دیگه‌ای دست جدید شروع کردی. این دست با ${fa(R.score || 0)} جواب درست ثبت شد.`, HOME);
+  if (v === 'G11.BLOCKED') return pg('lock', 'no', 'بازی غیرفعال شده است', '', SECONDARY('بازگشت به اپ', ' data-act="exit-app"'));   // exact copy (R-61)
+  if (v === 'G03.NO_PRODUCTS_LEFT') return pg('check', 'ok', 'کالاها تموم شد!', `کالای مناسب دیگه‌ای برای این دست نمونده. دستت با ${fa(R.score || 0)} جواب درست ثبت شد.`, PRIMARY('صفحه اصلی', ' data-act="home"', I.home));
   return '';
 }
 
-export { COIN, L, ICO, PLAYI, CB };
+export { L, ICO, SPIN };

@@ -19,11 +19,12 @@ public final class JdbcLedgerRepository implements LedgerRepository {
     @Override public void insertOperation(CoinOperation o) {
         update("""
             INSERT INTO pe_coin_operation (operation_id, user_id, run_id, offer_id, type, amount, held_amount, status, cap_day,
-              related_operation_id, provider_ref, attempts, next_attempt_at, give_up_at, last_error, created_at, updated_at, executed_at, confirmed_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+              related_operation_id, provider_ref, attempts, next_attempt_at, give_up_at, last_error, created_at, updated_at, executed_at, confirmed_at,
+              reward_key)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             o.operationId, o.userId, nz(o.runId), nz(o.offerId), o.type, o.amount, o.heldAmount, o.status, nz(o.capDay),
             nz(o.relatedOperationId), nz(o.providerRef), o.attempts, nz(o.nextAttemptAt), nz(o.giveUpAt), nz(o.lastError),
-            o.createdAt, o.createdAt, nz(o.executedAt), nz(o.confirmedAt));
+            o.createdAt, o.createdAt, nz(o.executedAt), nz(o.confirmedAt), nz(o.rewardKey));
     }
 
     @Override public Optional<CoinOperation> findOperation(String id) {
@@ -130,6 +131,7 @@ public final class JdbcLedgerRepository implements LedgerRepository {
         o.executedAt = ts(rs, "executed_at");
         o.confirmedAt = ts(rs, "confirmed_at");
         o.claimedAt = ts(rs, "claimed_at");
+        o.rewardKey = rs.getString("reward_key");
         return o;
     }
 }

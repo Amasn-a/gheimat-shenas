@@ -32,7 +32,7 @@ Every route, field name and error code below is a **proposal implemented in this
 | `POST /offers/{offer_id}/skip` | «رد کردن». `409 OPERATION_PENDING` once a purchase has been admitted (or its receipt recorded) for this offer | `RunView` |
 | `POST /runs/{run_id}/leave` | Leave confirm (G03.LEAVE_CONFIRM). `409 OPERATION_PENDING` while an admitted purchase is unresolved | `RunView` |
 | `GET /operations/{operation_id}` | Payment status polling (G06) | `OperationView` |
-| `GET /runs/{run_id}/result` | G07 result | `ResultView` |
+| `GET /runs/{run_id}/result` | G05 loss screen (record, campaign code) | `ResultView` |
 | `GET /runs/{run_id}/products` | G08 products of this run (UX-5). `409 FEATURE_DISABLED` when the run's configuration has the products switch off | `ProductsView` |
 | `GET /runs/{run_id}/share` | G09 share data (no player name). `409 FEATURE_DISABLED` when the run's configuration has the share switch off | `ShareView` |
 | `POST /player/onboarding` | Mandatory first-time onboarding finished (G02.ONBOARDING). Stored on the account, not the device | `{ok:true}` |
@@ -45,11 +45,12 @@ Every route, field name and error code below is a **proposal implemented in this
 - Identity and progress: `run_id`, `state` (READY · QUESTION_OPEN · AWAITING_OFFER · OFFER_OPEN · PAYMENT_PENDING · FINISHED), `finish_reason` (wrong · timeout · skipped · expired · continue_failed · left · no_products · inactive · game_off · blocked · replaced), `no_offer_reason` (no_funds · limit_used · game_off · disabled · blocked · no_products), `score`, `record`, `continues_used`, `highest_checkpoint`.
 - Products and questions: `reference {display_title, image_url, price}`, `question {question_id, product{display_title, image_url}, t0, input_deadline, accept_deadline}` (never a price), `last_result {question_id, result, choice, revealed_price, equal_prices, direction, settled_at}`.
 - Offer and payment: `offer {offer_id, state, opened_at, deadline (visible zero, opened_at + 10 s), accept_deadline (arrival deadline, opened_at + 15 s), resolve_by (accept_deadline + payment_resolution_ms), cost}`, `operation {operation_id, status}`, `awaiting_offer_until`.
-- Device, snapshot and time: `on_this_device`, and `run_config` (the run's config snapshot: `input_ms` (10,000), `accept_ms` (12,500), `offer_ms` (10,000), `offer_accept_ms` (15,000), `checkpoint_auto_continue_ms`, `checkpoints[]`, `continue_rule`, `features {streak, share, products, haptics}` — the A01 switches of that version; the client hides what is off). On another device `question` is null, which keeps the response minimal. Plus `server_time`.
+- Device, snapshot and time: `on_this_device`, and `run_config` (the run's config snapshot: `input_ms` (10,000), `accept_ms` (12,500), `offer_ms` (10,000), `offer_accept_ms` (15,000), `checkpoint_auto_continue_ms` (no longer used by the player since the redesign), `checkpoints[] {checkpoint_id, title, badge_asset_id, reward_amount, required_correct, comparison_percent}` (`comparison_percent`: the fixed copy «از {x} درصد آدما باهوش‌تری!», null = none), `continue_rule`, `features {streak, share, products, haptics}`, `pay_on_crossing` (true since the redesign: each checkpoint pays its own reward when crossed), `record_reward` and `record_reward_above` (redesign §13) — the A01 switches of that version; the client hides what is off). On another device `question` is null, which keeps the response minimal. Plus `server_time`.
 
 **AnswerView**
 - Verdict: `question_id`, `result` (correct · wrong · timeout), `choice`, `equal_prices`, `revealed_price`, `direction`.
 - Progress and next step: `score`, `checkpoint_reached`, `continue_possible`, `no_offer_reason`, `run_finished`.
+- Rewards registered by this answer (redesign 2026-10-21): `checkpoint_reward {amount, held_amount, status}` for the checkpoint it crossed (null when that checkpoint pays nothing), `record_reward` (same shape) when it matched the record frozen at run start. A replay of the answer returns the same values and creates nothing.
 - Context: `run`, `server_time`.
 
 **OperationView**
@@ -60,12 +61,12 @@ Every route, field name and error code below is a **proposal implemented in this
 
 **ResultView**
 - Run outcome: `score`, `reason`, `no_offer_reason`, `record`, `is_new_record`, `previous_record` (still returned; the End Screen no longer shows the record — brief 2026-10-20), `checkpoint`, `continues_used`, `continue_limit_used`, `next_goal`, `quota`, `balance`, `finished_at`.
-- Rewards: `checkpoint_reward {amount, held_amount, status: pending|succeeded|delayed}`. The streak block was removed (brief 2026-10-20: the streak appears only in the daily reward modal). Any held part makes the status `delayed`; a held or unknown reward is never shown as paid.
+- Rewards: `checkpoint_reward {amount, held_amount, status: pending|succeeded|delayed|none}` — since the redesign the total of the run's checkpoint and record credits (each registered at its crossing); delayed if any part is. The streak block was removed (brief 2026-10-20: the streak appears only in the daily reward modal). Any held part makes the status `delayed`; a held or unknown reward is never shown as paid.
 - Campaign: `campaign_code {status: issued|pending|sold_out, code, amount_toman, terms, expires_at}`.
 
 **ProductsView:** `items[] {position, role, question_id (null for the start product), display_title, image_url, game_price (null while unanswered), result, is_loss, link}` and `loss_product_id`. `loss_product_id` is set only when the run ended on a miss.
 
-**BootstrapView:** `access {status: ok|blocked|game_off, message}`, `first_visit` (true until the onboarding is finished), `quota {plays_left, plays_per_day, resets_at}`, `record`, `best_checkpoint`, `daily_reward` (a `DailyRewardView`), `balance` (used only by the extra-life purchase sheet), `active_run`, `config` (same shape as `run_config`, for the active version, including `features`), `campaign`, `server_time`. The `streak` and `streak_reward` fields were removed.
+**BootstrapView:** `access {status: ok|blocked|game_off, message}`, `first_visit` (true until the onboarding is finished), `quota {plays_left, plays_per_day, resets_at}`, `record`, `best_checkpoint`, `daily_reward` (a `DailyRewardView`), `balance` (shown on the home header since the redesign; the real number only, null when unknown), `active_run`, `config` (same shape as `run_config`, for the active version, including `features`), `campaign`, `last_run_id` (the player's most recent finished run: the home's «کالاهای دست قبلی» reads `GET /runs/{id}/products`; null for a new player), `server_time`. The `streak` and `streak_reward` fields were removed.
 
 **DailyRewardView:** `state` (claimable · processing · claimed · delayed · none), `amount` (of the claimable or latest claimed reward), `streak_days`, `days[] {date, attended, today}` (the last 7 business days), `operation_ids`, `claimed_at`, `server_time`. `processing` lasts up to 2 minutes after a claim (proposed); after that an unconfirmed credit is `delayed`.
 

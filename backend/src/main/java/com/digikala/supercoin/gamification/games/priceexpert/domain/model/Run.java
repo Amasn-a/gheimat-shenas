@@ -35,6 +35,7 @@ public class Run {
     public Boolean newRecord;
     public String replacedByRunId;
     public String campaignOutcome;
+    public Integer bestScoreAtStart;   // the all-time record when the run started: frozen target of the record reward (§13)
 
     public boolean isFinished() { return state == RunState.FINISHED; }
 }

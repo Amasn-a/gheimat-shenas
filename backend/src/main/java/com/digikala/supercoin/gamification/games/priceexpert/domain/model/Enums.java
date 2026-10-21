@@ -20,8 +20,8 @@ public final class Enums {
 
     public enum OfferState { OPEN, PAYMENT_PENDING, GRANTED, SKIPPED, EXPIRED, ENDED_UNCONFIRMED, CANCELLED }
 
-    public enum OperationType { CHARGE, CHECKPOINT_REWARD, STREAK_REWARD, REFUND;
-        public boolean isCredit() { return this == CHECKPOINT_REWARD || this == STREAK_REWARD; } }
+    public enum OperationType { CHARGE, CHECKPOINT_REWARD, STREAK_REWARD, REFUND, RECORD_REWARD;
+        public boolean isCredit() { return this == CHECKPOINT_REWARD || this == STREAK_REWARD || this == RECORD_REWARD; } }
 
     /** PENDING = intent stored, not yet confirmed by the provider; UNKNOWN = sent, outcome not known. */
     /** CLAIMABLE: a daily (streak) reward earned and recorded, waiting for the player's claim; never picked by the worker. */

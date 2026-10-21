@@ -26,5 +26,6 @@ public class CoinOperation {
     public Instant createdAt;
     public Instant executedAt;
     public Instant confirmedAt;
+    public String rewardKey;       // run rewards: the checkpoint id or 'record:<target>'; one per run and key (V5)
     public Instant claimedAt;      // daily reward: when the player's claim turned CLAIMABLE into PENDING
 }

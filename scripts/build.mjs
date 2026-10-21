@@ -16,11 +16,12 @@ async function bundle(app, entries, css) {
   const r = await build({ entryPoints: entries, bundle: true, minify: true, format: 'esm', target: ['es2021'],   // shortcut: WebView floor unknown (host docs); es2021 ≈ Chrome 85 / Safari 14.1. Narrow when the floor is known,
     outdir: out, entryNames: '[name]-[hash]', metafile: true, legalComments: 'none', logLevel: 'warning' });
   const c = await build({ stdin: { contents: css.map(f => `@import "${f}";`).join('\n'), resolveDir: join(ROOT, app), loader: 'css' },
-    bundle: true, minify: true, outfile: join(out, 'app.css'), external: ['*.woff2'], logLevel: 'warning', write: false });
+    bundle: true, minify: true, outfile: join(out, 'app.css'), external: ['*.woff2', '*.woff', '*.ttf', '*.webp'], logLevel: 'warning', write: false });
   const cssText = c.outputFiles[0].text.replaceAll('../fonts/', 'fonts/');   // the bundle sits next to fonts/, not in styles/
   const cssName = `app-${createHash('sha256').update(cssText).digest('hex').slice(0, 8)}.css`;
   writeFileSync(join(out, cssName), cssText);
   cpSync(join(ROOT, app, 'fonts'), join(out, 'fonts'), { recursive: true });
+  try { cpSync(join(ROOT, app, 'assets'), join(out, 'assets'), { recursive: true }); } catch (e) { if (e.code !== 'ENOENT') throw e; }   // badges, trophy (player only)
   return { out, js: Object.keys(r.metafile.outputs).map(p => p.split('/').pop()), cssName, meta: r.metafile };
 }
 
@@ -41,7 +42,7 @@ function audit() {
 
 if (!checkOnly) {
   // player: the integration-owned host-boot.js is the entry, so its configureHost() call and the game share one host.js
-  const p = await bundle('player', [join(ROOT, 'player/src/host-boot.js')], ['./styles/fonts.css', './styles/tokens.css', './styles/ds.css', './styles/app.css']);
+  const p = await bundle('player', [join(ROOT, 'player/src/host-boot.js')], ['./styles/fonts.css', './styles/tokens.css', './styles/game.css']);
   const entry = p.js.find(f => f.startsWith('host-boot-') && f.endsWith('.js'));
   const inputs = Object.values(p.meta.outputs).flatMap(o => Object.keys(o.inputs));
   const missing = ['player/src/host-boot.js', 'player/src/host.js', 'player/src/main.js'].filter(f => !inputs.some(i => i.endsWith(f)));

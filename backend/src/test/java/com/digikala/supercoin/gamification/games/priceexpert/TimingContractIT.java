@@ -202,7 +202,7 @@ class TimingContractIT {
         assertTrue(done.definitive());
         assertEquals("READY", done.run().state(), "the extra life is granted after its confirmation, not at the visible zero");
         assertEquals(1, done.run().continuesUsed());
-        assertEquals(110, env.walletBalance(o.user()), "one debit");
+        assertEquals(115, env.walletBalance(o.user()), "one debit");
         assertEquals(1, env.count("SELECT count(*) FROM pe_coin_operation WHERE offer_id = ? AND type = 'CHARGE'", o.offer().offerId()));
     }
 
@@ -218,7 +218,7 @@ class TimingContractIT {
         assertEquals("PAYMENT_PENDING", env.scalar("SELECT state FROM pe_run WHERE run_id = ?", o.runId()), "admitted, not expired");
         env.drainLedger();
         assertEquals("READY", env.scalar("SELECT state FROM pe_run WHERE run_id = ?", o.runId()));
-        assertEquals(110, env.walletBalance(o.user()));
+        assertEquals(115, env.walletBalance(o.user()));
         OperationView retry = buy(o, 17_000, 17_000);                     // the client's retry finds that operation
         assertEquals("succeeded", retry.status());
     }

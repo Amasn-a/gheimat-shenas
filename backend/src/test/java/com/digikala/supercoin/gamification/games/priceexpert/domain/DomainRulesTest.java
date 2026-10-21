@@ -84,7 +84,7 @@ class DomainRulesTest {
 
     @Test void bandForScoreFollowsScoreNotCheckpoints() {
         DifficultyPolicy p = new DifficultyPolicy(B);
-        int[] expected = {0, 0, 0, 1, 1, 2, 2, 3, 3, 3, 4, 4, 4, 4, 4};
+        int[] expected = {0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 4, 4, 4};
         for (int s = 0; s < expected.length; s++) assertEquals(expected[s], p.bandIndexFor(s), "score " + s);
         assertEquals(4, p.bandIndexFor(120));
     }
@@ -99,14 +99,20 @@ class DomainRulesTest {
         assertFalse(q.isCorrect(Choice.lower));
     }
 
-    @Test void capFormulaAndHighestCheckpointOnly() {
+    @Test void capFormulaAndPayOnCrossing() {
         GameConfig c = LaunchConfig.value();
-        assertEquals(40, c.highestCheckpointReward());
-        assertEquals(121, c.dailyAccountCap());   // 3 × 40 + 1 (R-47)
-        // highest checkpoint reached at score 7 pays its own total (20), never 5 + 10 + 20
-        GameConfig.Checkpoint reached = null;
-        for (GameConfig.Checkpoint cp : c.enabledCheckpoints()) if (cp.requiredCorrect() <= 7) reached = cp;
-        assertEquals(20, reached.reward());
+        assertTrue(c.payOnCrossing());
+        assertEquals(List.of(0, 1, 3, 5), c.enabledCheckpoints().stream().map(GameConfig.Checkpoint::reward).toList());
+        assertEquals(List.of(5, 10, 15, 20), c.enabledCheckpoints().stream().map(GameConfig.Checkpoint::requiredCorrect).toList());
+        assertEquals(10, c.runRewardCeiling());   // each crossed checkpoint pays its own: 0 + 1 + 3 + 5, plus the record reward 1
+        assertEquals(31, c.dailyAccountCap());    // 3 × (9 + 1) + 1 (R-47, redesign 2026-10-21)
+        assertEquals(5, c.continueRule().cost());
+        // a version from before the redesign: highest checkpoint only (R-17)
+        GameConfig legacy = new GameConfig(c.playsPerDay(), c.inputMs(), c.acceptMs(), c.offerMs(), c.offerAcceptMs(), c.paymentResolutionMs(), c.inactivityMs(),
+                c.offerActivationMs(), c.timeoutGraceMs(), c.checkpointAutoContinueMs(), c.checkpoints(), c.continueRule(), c.streakReward(), c.bands(),
+                null, null, c.features(), false, 0, c.recordRewardAbove());
+        assertEquals(5, legacy.runRewardCeiling());
+        assertEquals(16, legacy.dailyAccountCap());
     }
 
     @Test void t34_streakIsConsecutiveStartDaysAndBreaks() {
@@ -127,10 +133,10 @@ class DomainRulesTest {
         GameConfig ok = LaunchConfig.value();
         assertTrue(ConfigValidator.validate(ok, ConfigValidator.Bounds.pending()).isEmpty());
         var bands = new ArrayList<>(ok.bands());
-        bands.set(4, new DifficultyBand(10, 0, true, 800, true));          // minimum 0 would allow equal prices
+        bands.set(4, new DifficultyBand(20, 0, true, 800, true));          // minimum 0 would allow equal prices
         GameConfig bad = new GameConfig(0, 10_500, 11_000, ok.offerMs(), 10_000, ok.paymentResolutionMs(), ok.inactivityMs(), ok.offerActivationMs(), ok.timeoutGraceMs(),
-                ok.checkpointAutoContinueMs(), List.of(new GameConfig.Checkpoint("cp_5", 5, "a", "badge_5", -1, true), new GameConfig.Checkpoint("cp_3", 3, "b", "badge_3", 5, true)),
-                new GameConfig.ContinueRule(true, 0, -1), -1, bands, null, null, ok.features());
+                ok.checkpointAutoContinueMs(), List.of(new GameConfig.Checkpoint("cp_5", 5, "a", "badge_5", -1, true, null), new GameConfig.Checkpoint("cp_3", 3, "b", "badge_3", 5, true, null)),
+                new GameConfig.ContinueRule(true, 0, -1), -1, bands, null, null, ok.features(), ok.payOnCrossing(), ok.recordReward(), ok.recordRewardAbove());
         var e = ConfigValidator.validate(bad, ConfigValidator.Bounds.pending());
         assertTrue(e.containsKey("plays_per_day"));
         assertTrue(e.containsKey("input_ms"), "timer is fixed in P0: the obsolete 10,500 ms input deadline is refused");
@@ -151,10 +157,10 @@ class DomainRulesTest {
         // review of 716d889: 3 × 1,500,000,000 + 1 wrapped to 205,032,705 in 32-bit arithmetic and passed validation
         GameConfig b = LaunchConfig.value();
         List<GameConfig.Checkpoint> cps = b.checkpoints().stream()
-                .map(c -> new GameConfig.Checkpoint(c.id(), c.requiredCorrect(), c.title(), c.badgeAssetId(), 1_500_000_000, c.enabled())).toList();
+                .map(c -> new GameConfig.Checkpoint(c.id(), c.requiredCorrect(), c.title(), c.badgeAssetId(), 1_500_000_000, c.enabled(), null)).toList();
         GameConfig huge = new GameConfig(3, b.inputMs(), b.acceptMs(), b.offerMs(), b.offerAcceptMs(), b.paymentResolutionMs(), b.inactivityMs(), b.offerActivationMs(), b.timeoutGraceMs(),
-                b.checkpointAutoContinueMs(), cps, b.continueRule(), 1, b.bands(), b.payoutAlertThreshold(), b.priceChangeThresholdBp(), b.features());
-        assertEquals(4_500_000_001L, huge.dailyAccountCapExact());
+                b.checkpointAutoContinueMs(), cps, b.continueRule(), 1, b.bands(), b.payoutAlertThreshold(), b.priceChangeThresholdBp(), b.features(), b.payOnCrossing(), b.recordReward(), b.recordRewardAbove());
+        assertEquals(18_000_000_004L, huge.dailyAccountCapExact());   // 3 × (4 × 1.5e9 + 1) + 1, each checkpoint paid
         assertThrows(ArithmeticException.class, huge::dailyAccountCap, "an oversized cap throws instead of wrapping");
         assertTrue(ConfigValidator.validate(huge, ConfigValidator.Bounds.pending()).containsKey("daily_account_cap"), "rejected before publish");
         assertTrue(ConfigValidator.validate(b, ConfigValidator.Bounds.pending()).isEmpty());

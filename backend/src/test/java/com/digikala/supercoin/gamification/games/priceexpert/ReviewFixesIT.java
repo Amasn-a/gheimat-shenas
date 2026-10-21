@@ -49,7 +49,7 @@ class ReviewFixesIT {
     // ------------------------------------------------------------------------------------------------ #16
 
     Campaign draft(String name, Instant start, Instant end) {
-        return new Campaign(null, name, start, end, List.of("cp_3"), 50_000, 10, "شرایط آزمایشی", 5, 250_000, 0, 0, null);
+        return new Campaign(null, name, start, end, List.of("cp_10"), 50_000, 10, "شرایط آزمایشی", 5, 250_000, 0, 0, null);
     }
 
     @Test void concurrentOverlappingCampaignsCannotBothBeCreated_andAnEndedCampaignStaysEnded() throws Exception {

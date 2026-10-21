@@ -149,6 +149,7 @@ public final class DeadlineService {
             run.readySince = now;
             run.nextDeadlineAt = now.plusMillis(cfg.inactivityMs());
             ctx.runs().updateRun(run);
+            settlement.crossingRewards(run, cfg, reached, now);          // registered at the valid crossing (redesign §10)
             if (!ctx.settings().gameEnabled()) settlement.finish(run, player, FinishReason.game_off, now);
         } else {
             miss(run, player, q, cfg, q.receivedAt);

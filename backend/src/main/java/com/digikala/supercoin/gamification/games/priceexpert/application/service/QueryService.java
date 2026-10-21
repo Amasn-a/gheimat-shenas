@@ -74,7 +74,8 @@ public final class QueryService {
             return new BootstrapView(access, !player.onboarded, new Quota(Math.max(0, cfg.playsPerDay() - playsUsed), cfg.playsPerDay(),
                     BusinessCalendar.nextMidnight(now)), player.record, best, dailyRewards.view(caller.userId(), now),
                     balance.isPresent() ? balance.getAsLong() : null, active,
-                    ViewAssembler.runConfig(cfg, cfgVersion, ctx.activeCatalogVersion()), banner, now);
+                    ViewAssembler.runConfig(cfg, cfgVersion, ctx.activeCatalogVersion()), banner,
+                    ctx.runs().latestFinishedRunIdOfUser(caller.userId()).orElse(null), now);
         });
     }
 
@@ -100,8 +101,13 @@ public final class QueryService {
             if (!run.isFinished()) throw runs.stateError("RUN_NOT_FINISHED", run, l.player(), caller);
             GameConfig cfg = ctx.config(run.configVersion);
             List<CoinOperation> ops = ctx.ledger().operationsOfRun(run.runId);
-            RewardStatus cpReward = ops.stream().filter(o -> o.type == OperationType.CHECKPOINT_REWARD).findFirst()
-                    .map(o -> rewardStatus(o, now)).orElse(new RewardStatus(0, 0, run.finishReason == FinishReason.blocked && run.highestCheckpointId != null ? "cancelled" : "none"));
+            // the run's checkpoint and record credits together (redesign: one per crossed checkpoint); delayed if any part is
+            List<RewardStatus> parts = ops.stream().filter(o -> o.type == OperationType.CHECKPOINT_REWARD || o.type == OperationType.RECORD_REWARD)
+                    .map(o -> rewardStatus(o, now)).toList();
+            RewardStatus cpReward = parts.isEmpty()
+                    ? new RewardStatus(0, 0, run.finishReason == FinishReason.blocked && run.highestCheckpointId != null && !cfg.payOnCrossing() ? "cancelled" : "none")
+                    : new RewardStatus(parts.stream().mapToInt(RewardStatus::amount).sum(), parts.stream().mapToInt(RewardStatus::heldAmount).sum(),
+                        parts.stream().anyMatch(x -> x.status().equals("delayed")) ? "delayed" : parts.stream().anyMatch(x -> x.status().equals("pending")) ? "pending" : "succeeded");
             LocalDate today = BusinessCalendar.dateOf(now);
             NextGoal next = cfg.enabledCheckpoints().stream().filter(cp -> cp.requiredCorrect() > run.score).findFirst()
                     .map(cp -> new NextGoal(cp.requiredCorrect() - run.score, cp.title(), cp.reward(), cp.requiredCorrect())).orElse(null);
@@ -118,7 +124,7 @@ public final class QueryService {
         });
     }
 
-    private RewardStatus rewardStatus(CoinOperation o, Instant now) {
+    static RewardStatus rewardStatus(CoinOperation o, Instant now) {
         // a held part is never paid yet, so the reward as a whole is delayed
         String status = o.heldAmount > 0 ? "delayed" : switch (o.status) {
             case SUCCEEDED -> "succeeded";

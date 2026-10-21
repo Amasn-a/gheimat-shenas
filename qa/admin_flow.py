@@ -94,10 +94,10 @@ async def main():
         await pg.click("a[data-to=A02]")
         await pg.fill("[data-path='checkpoints[3].required_correct']", "5")
         await pg.press("[data-path='checkpoints[3].required_correct']", "Tab")
-        await expect(pg.locator(".qa-err").first).to_contain_text("باید بیشتر از ۷ باشد")
+        await expect(pg.locator(".qa-err").first).to_contain_text("باید بیشتر از ۱۵ باشد")
         assert await pg.locator(".qa-vbar [data-act=noop][disabled]").count() == 1, "publish must be disabled while errors exist"
         await shot(pg, "A02-error")
-        await pg.fill("[data-path='checkpoints[3].required_correct']", "10")
+        await pg.fill("[data-path='checkpoints[3].required_correct']", "20")
         await pg.press("[data-path='checkpoints[3].required_correct']", "Tab")
         await expect(pg.locator(".qa-vbar [data-act=publish]")).to_be_enabled()
 
@@ -119,7 +119,7 @@ async def main():
 
         # A03 economy and preview
         await pg.click("a[data-to=A03]")
-        await expect(pg.locator(".ad-sheet")).to_contain_text("ادامه با ۱۰ دیجی‌کوین")
+        await expect(pg.locator(".ad-sheet")).to_contain_text("۵ دیجی‌کوین")
         await shot(pg, "A03")
 
         # A04 difficulty + pair counts
@@ -181,7 +181,7 @@ async def main():
         await pg.fill("[data-model='camps.form.name']", name)
         await pg.fill("[data-model='camps.form.starts']", "2030-01-01T10:00")
         await pg.fill("[data-model='camps.form.ends']", "2030-01-03T10:00")
-        await pg.check("[data-act=camp-cp][value=cp_7]")
+        await pg.check("[data-act=camp-cp][value=cp_15]")
         await pg.fill("[data-model='camps.form.amount']", "50000")
         await pg.fill("[data-model='camps.form.validity']", "14")
         await pg.fill("[data-model='camps.form.cap']", "100")

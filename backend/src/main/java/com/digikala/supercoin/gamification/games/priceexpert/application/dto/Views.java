@@ -21,7 +21,9 @@ public final class Views {
     public record LastResult(String questionId, String result, String choice, long revealedPrice, boolean equalPrices, String direction,
                              Instant settledAt) {}
 
-    public record CheckpointView(String checkpointId, String title, String badgeAssetId, int rewardAmount, int requiredCorrect) {}
+    /** comparisonPercent: fixed product copy of the checkpoint (redesign §9), not a measured statistic; null = none. */
+    public record CheckpointView(String checkpointId, String title, String badgeAssetId, int rewardAmount, int requiredCorrect,
+                                 Integer comparisonPercent) {}
 
     /**
      * deadline = end of the visible decision window; acceptDeadline = last arrival instant of a purchase request
@@ -38,7 +40,7 @@ public final class Views {
 
     public record RunConfigView(int configVersion, int catalogVersion, long inputMs, long acceptMs, long offerMs, long offerAcceptMs,
                                 long checkpointAutoContinueMs, List<CheckpointView> checkpoints, ContinueRuleView continueRule,
-                                FeaturesView features) {}
+                                FeaturesView features, boolean payOnCrossing, int recordReward, int recordRewardAbove) {}
 
     public record RunView(String runId, String state, String finishReason, String noOfferReason, int score, int record,
                           int continuesUsed, CheckpointView highestCheckpoint, ReferenceCard reference, QuestionView question,
@@ -49,9 +51,13 @@ public final class Views {
 
     public record StartView(RunView run, ReplacedRun replacedRun, Quota quota) {}
 
+    /**
+     * checkpointReward: the credit registered when this answer crossed checkpointReached (null when it pays nothing);
+     * recordReward: the credit when this answer matched the record frozen at run start (redesign §13), else null.
+     */
     public record AnswerView(String questionId, String result, String choice, boolean equalPrices, long revealedPrice, String direction,
-                             int score, CheckpointView checkpointReached, boolean continuePossible, String noOfferReason,
-                             boolean runFinished, RunView run, Instant serverTime) {}
+                             int score, CheckpointView checkpointReached, RewardStatus checkpointReward, RewardStatus recordReward,
+                             boolean continuePossible, String noOfferReason, boolean runFinished, RunView run, Instant serverTime) {}
 
     public record ActivationView(OfferView offer, Long balance, String noOfferReason, RunView run, Instant serverTime) {}
 
@@ -75,7 +81,7 @@ public final class Views {
     /** firstVisit = the account has not completed the onboarding (stored on the account, not on the device). */
     public record BootstrapView(Access access, boolean firstVisit, Quota quota, int record, CheckpointView bestCheckpoint,
                                 DailyRewardView dailyReward, Long balance, ActiveRun activeRun, RunConfigView config, CampaignBanner campaign,
-                                Instant serverTime) {}
+                                String lastRunId, Instant serverTime) {}
 
     public record DailyRewardDay(java.time.LocalDate date, boolean attended, boolean today) {}
 
@@ -87,6 +93,7 @@ public final class Views {
     public record DailyRewardView(String state, int amount, int streakDays, List<DailyRewardDay> days, List<String> operationIds,
                                   Instant claimedAt, Instant serverTime) {}
 
+    /** status: pending · succeeded · delayed · none · cancelled. For a run total, delayed if any part is. */
     public record RewardStatus(int amount, int heldAmount, String status) {}
 
     public record NextGoal(int remaining, String title, int reward, int requiredCorrect) {}

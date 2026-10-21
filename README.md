@@ -36,10 +36,10 @@ The development backend uses the **in-project fake DigiCoin provider** and a **d
 Run from the repository root (the backend tests need `price_expert_test`; the browser checks need the development backend running):
 
 ```bash
-(cd backend && ./gradlew test)                      # 111 tests on PostgreSQL (unit + integration + HTTP, timing contract, daily reward, difficulty)
-python3 qa/brief.py /tmp/qa-brief                   # onboarding, daily reward, gameplay, checkpoint, purchase, End Screen at 360×640, 390×844, 430×932 + DOM audit
-python3 qa/states.py /tmp/qa-states [scenario…]     # 13 scenarios: timeout, no funds, payments, replacement, block, game-off, quota, campaign, offline, motion
-python3 qa/lifecycle.py [check…]                    # 15 client lifecycle checks (stale responses, timing boundaries, checkpoint once, purchase recovery, Back, light only)
+(cd backend && ./gradlew test)                      # 117 tests on PostgreSQL (unit + integration + HTTP, timing contract, rewards at crossing, record reward, daily reward, difficulty)
+python3 qa/redesign.py /tmp/qa-redesign            # redesign 2026-10-21: splash, onboarding, home, guide, daily reward, gameplay, checkpoints, loss/continue at 360×640, 390×844, 430×932 + DOM audit (RTL, back right, icons left, Digikala font only)
+python3 qa/states.py [scenario…]                    # 5 scenarios: other-device replacement, block, game-off, offline before release, campaign code
+python3 qa/lifecycle.py [check…]                    # 23 client lifecycle checks (timing boundaries, checkpoint once, loss-home, payment states, purchase recovery, offline/refresh, quota reset, light only)
 python3 qa/admin_flow.py /tmp/qa-admin              # admin A01–A07, Editor and Viewer
 python3 qa/motion_video.py /tmp/qa-motion           # 30 fps frames of the card transitions
 python3 qa/load.py 30 20 5                          # catalog depth + local load baseline (not a capacity claim)

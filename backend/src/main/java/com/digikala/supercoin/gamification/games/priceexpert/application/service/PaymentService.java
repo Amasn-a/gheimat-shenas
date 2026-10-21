@@ -80,7 +80,7 @@ public final class PaymentService {
         }
         return switch (op.type) {
             case CHARGE -> ctx.coin().charge(op.userId, op.amount, op.operationId);
-            case CHECKPOINT_REWARD, STREAK_REWARD -> ctx.coin().credit(op.userId, op.amount, op.operationId);
+            case CHECKPOINT_REWARD, STREAK_REWARD, RECORD_REWARD -> ctx.coin().credit(op.userId, op.amount, op.operationId);
             case REFUND -> ctx.coin().refund(op.userId, op.amount, op.operationId, op.relatedOperationId);
         };
     }

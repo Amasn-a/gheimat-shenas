@@ -40,6 +40,10 @@ public final class JdbcRunRepository implements RunRepository {
         return one("SELECT " + RUN_COLS + " FROM pe_run WHERE user_id = ? AND state <> 'FINISHED' FOR UPDATE", JdbcRunRepository::run, userId);
     }
 
+    @Override public Optional<String> latestFinishedRunIdOfUser(String userId) {
+        return one("SELECT run_id FROM pe_run WHERE user_id = ? AND state = 'FINISHED' ORDER BY started_at DESC LIMIT 1", rs -> rs.getString(1), userId);
+    }
+
     @Override public Optional<Run> findActiveRunOfUser(String userId) {
         return one("SELECT " + RUN_COLS + " FROM pe_run WHERE user_id = ? AND state <> 'FINISHED'", JdbcRunRepository::run, userId);
     }
@@ -49,12 +53,13 @@ public final class JdbcRunRepository implements RunRepository {
             INSERT INTO pe_run (run_id, user_id, device_id, state, finish_reason, no_offer_reason, state_revision, start_business_date,
               started_at, finished_at, config_version, catalog_version, campaign_id, score, continues_used, highest_checkpoint_id,
               reference_dkp, next_seq, ready_since, miss_question_id, miss_at, loss_question_id, next_deadline_at, record_before,
-              new_record, replaced_by_run_id, campaign_outcome, updated_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, now())""",
+              new_record, replaced_by_run_id, campaign_outcome, best_score_at_start, updated_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, now())""",
             r.runId, r.userId, r.deviceId, r.state, nz(r.finishReason), nz(r.noOfferReason), r.stateRevision, r.startBusinessDate,
             r.startedAt, nz(r.finishedAt), r.configVersion, r.catalogVersion, nz(r.campaignId), r.score, r.continuesUsed,
             nz(r.highestCheckpointId), r.referenceDkp, r.nextSeq, nz(r.readySince), nz(r.missQuestionId), nz(r.missAt),
-            nz(r.lossQuestionId), nz(r.nextDeadlineAt), nz(r.recordBefore), nz(r.newRecord), nz(r.replacedByRunId), nz(r.campaignOutcome));
+            nz(r.lossQuestionId), nz(r.nextDeadlineAt), nz(r.recordBefore), nz(r.newRecord), nz(r.replacedByRunId), nz(r.campaignOutcome),
+            nz(r.bestScoreAtStart));
     }
 
     @Override public void updateRun(Run r) {
@@ -195,6 +200,7 @@ public final class JdbcRunRepository implements RunRepository {
         r.lossQuestionId = rs.getString("loss_question_id");
         r.nextDeadlineAt = ts(rs, "next_deadline_at");
         r.recordBefore = intOrNull(rs, "record_before");
+        r.bestScoreAtStart = intOrNull(rs, "best_score_at_start");
         r.newRecord = boolOrNull(rs, "new_record");
         r.replacedByRunId = rs.getString("replaced_by_run_id");
         r.campaignOutcome = rs.getString("campaign_outcome");

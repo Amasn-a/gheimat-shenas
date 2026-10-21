@@ -105,20 +105,25 @@ public final class AdminService {
         ctx.configs().saveSettings(new Settings(v, s.activeCatalogVersion(), s.gameEnabled(), s.playerMessage(), s.revision() + 1, "system:migration", now));
         ctx.ledger().raiseCapHighWater(BusinessCalendar.dateOf(now), fixed.dailyAccountCap(), now);
         ctx.audit().append("system:migration", "SYSTEM", "config.publish", "config:" + v, json.apply(a), json.apply(fixed),
-                "fixed P0 timing of 2026-10-20: answers 10 s visible / 12.5 s arrival; extra life 10 s visible / 15 s arrival",
+                "fixed P0 timing of 2026-10-20 and the redesign of 2026-10-21 (checkpoints 5/10/15/20 paying 0/1/3/5 when crossed, continue 5, record reward 1 above 20)",
                 "config:" + active.version(), now);
     }
 
     static boolean hasLaunchTiming(GameConfig c) {
         return c.inputMs() == LaunchConfig.INPUT_MS && c.acceptMs() == LaunchConfig.ACCEPT_MS && c.offerMs() == LaunchConfig.OFFER_MS
-                && c.offerAcceptMs() == LaunchConfig.OFFER_ACCEPT_MS && c.paymentResolutionMs() > 0;
+                && c.offerAcceptMs() == LaunchConfig.OFFER_ACCEPT_MS && c.paymentResolutionMs() > 0 && c.payOnCrossing();
     }
 
     static GameConfig withLaunchTiming(GameConfig c) {
+        // redesign 2026-10-21: a version published before it also gets the new checkpoints, rewards, continue cost, band
+        // starts and record reward; plays, continue cap, streak, alerts and switches stay as the editor set them
+        boolean redesign = !c.payOnCrossing();
         return new GameConfig(c.playsPerDay(), LaunchConfig.INPUT_MS, LaunchConfig.ACCEPT_MS, LaunchConfig.OFFER_MS, LaunchConfig.OFFER_ACCEPT_MS,
                 c.paymentResolutionMs() > 0 ? c.paymentResolutionMs() : LaunchConfig.PAYMENT_RESOLUTION_MS, c.inactivityMs(), c.offerActivationMs(),
-                c.timeoutGraceMs(), c.checkpointAutoContinueMs(), c.checkpoints(), c.continueRule(), c.streakReward(), c.bands(),
-                c.payoutAlertThreshold(), c.priceChangeThresholdBp(), c.features());
+                c.timeoutGraceMs(), c.checkpointAutoContinueMs(), redesign ? LaunchConfig.CHECKPOINTS : c.checkpoints(),
+                redesign ? new GameConfig.ContinueRule(c.continueRule().enabled(), LaunchConfig.CONTINUE_COST, c.continueRule().cap()) : c.continueRule(),
+                c.streakReward(), redesign ? LaunchConfig.BANDS : c.bands(), c.payoutAlertThreshold(), c.priceChangeThresholdBp(), c.features(),
+                true, redesign ? LaunchConfig.RECORD_REWARD : c.recordReward(), redesign ? LaunchConfig.RECORD_REWARD_ABOVE : c.recordRewardAbove());
     }
 
     // ------------------------------------------------------------------------------------------------ A01–A04 configuration

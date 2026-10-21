@@ -72,12 +72,12 @@ const NAV = [['A01', 'بازی و سهمیه'], ['A02', 'چک‌پوینت‌ه�
   ['A05', 'عملیات و بررسی'], ['A07', 'کمپین‌ها'], ['A06', 'تاریخچه تغییرات']];
 const TITLE = Object.fromEntries(NAV);
 const LABELS = {
-  plays_per_day: 'دست روزانه', inactivity_ms: 'پایان با بی‌فعالیتی', streak_reward: 'پاداش استریک',
+  plays_per_day: 'دست روزانه', inactivity_ms: 'پایان با بی‌فعالیتی', streak_reward: 'پاداش استریک', record_reward: 'جایزه رسیدن به رکورد', record_reward_above: 'رکورد بالاتر از', pay_on_crossing: 'پرداخت در لحظه عبور',
   'continue_rule.enabled': 'ادامه با دیجی‌کوین', 'continue_rule.cost': 'هزینه هر ادامه', 'continue_rule.cap': 'سقف ادامه موفق در هر دست',
   'features.streak': 'استریک روزانه', 'features.share': 'اشتراک‌گذاری نتیجه', 'features.products': 'کالاهای این دست', 'features.haptics': 'لرزش',
   payout_alert_threshold: 'آستانه هشدار پرداخت روزانه', price_change_threshold_bp: 'آستانه تغییر قیمت کاتالوگ',
 };
-const CP_F = { required_correct: 'حد پاسخ درست', title: 'عنوان', reward: 'پاداش', enabled: 'فعال', badge_asset_id: 'نشان', id: 'شناسه' };
+const CP_F = { required_correct: 'حد پاسخ درست', title: 'عنوان', reward: 'پاداش', enabled: 'فعال', badge_asset_id: 'نشان', id: 'شناسه', comparison_percent: 'درصد متن مقایسه' };
 const BAND_F = { min_score: 'از پاسخ درست', min_bp: 'حداقل فاصله', max_bp: 'حداکثر فاصله', min_inclusive: 'شامل حداقل', max_inclusive: 'شامل حداکثر' };
 const BAND_NAMES = ['آسان', 'متوسط', 'سخت', 'خیلی سخت', 'خبره'];
 function label(k) {
@@ -96,6 +96,7 @@ function val(k, v) {
 function section(k) {
   if (k.startsWith('checkpoints')) return 'A02';
   if (k.startsWith('continue_rule') || k === 'streak_reward') return 'A03';
+  if (k.startsWith('record_reward') || k === 'pay_on_crossing') return 'A02';
   if (k.startsWith('bands')) return 'A04';
   return 'A01';
 }
@@ -170,11 +171,11 @@ function onFieldChange(el) {
   if (kind === 'text') v = el.value.trim();
   else {
     const raw = latin(el.value);
-    if (raw === '' && kind === 'pct-opt') v = null;
+    if (raw === '' && (kind === 'pct-opt' || kind === 'int-opt')) v = null;
     else {
       const n = Number(raw);
-      if (raw === '' || !Number.isFinite(n) || (kind === 'int' && !Number.isInteger(n))) { S.localErr[p] = 'یک عدد معتبر وارد کن'; render(); return; }
-      v = kind === 'int' ? n : Math.round(n * 100);
+      if (raw === '' || !Number.isFinite(n) || ((kind === 'int' || kind === 'int-opt') && !Number.isInteger(n))) { S.localErr[p] = 'یک عدد معتبر وارد کن'; render(); return; }
+      v = kind === 'int' || kind === 'int-opt' ? n : Math.round(n * 100);
     }
   }
   delete S.localErr[p];
@@ -279,7 +280,7 @@ function a01(w) {
     <div class="qa-field"><label>پایان با بی‌فعالیتی بین سؤال‌ها<small>تصمیم مالک؛ در P0 ثابت</small></label><span class="qa-in"><input class="qa-input" readonly value="${faRaw(w.inactivity_ms / 60000)}" aria-label="پایان با بی‌فعالیتی"><span class="qa-unit">دقیقه</span></span></div>
     <div class="qa-field"><label>زمان پاسخ<small>ثابت در P0 · پنجره نمایش و مهلت رسیدن درخواست به سرور (۲۰۲۶-۱۰-۲۰)</small></label><span class="qa-in"><input class="qa-input" readonly value="${faRaw(w.input_ms / 1000)} / ${faRaw(w.accept_ms / 1000)}" aria-label="زمان پاسخ"><span class="qa-unit">ثانیه</span></span></div>
     <div class="qa-field"><label>فرصت پیشنهاد ادامه<small>ثابت در P0 · پنجره نمایش و مهلت رسیدن درخواست خرید</small></label><span class="qa-in"><input class="qa-input" readonly value="${faRaw(w.offer_ms / 1000)} / ${faRaw(w.offer_accept_ms / 1000)}" aria-label="فرصت پیشنهاد ادامه"><span class="qa-unit">ثانیه</span></span></div>
-    <div class="qa-field"><label>سقف پاداش روزانه هر حساب<small>محاسبه‌شده: بالاترین چک‌پوینت × دست روزانه + استریک</small></label><span>${fa(S.ov.draft ? S.ov.draft_daily_cap : S.ov.active_daily_cap)} دیجی‌کوین</span></div>
+    <div class="qa-field"><label>سقف پاداش روزانه هر حساب<small>محاسبه‌شده: دست روزانه × (مجموع پاداش چک‌پوینت‌ها + جایزه رکورد) + استریک</small></label><span>${fa(S.ov.draft ? S.ov.draft_daily_cap : S.ov.active_daily_cap)} دیجی‌کوین</span></div>
     </section><section class="qa-card"><h2>قابلیت‌های P0</h2>
     ${row('continue_rule.enabled', w.continue_rule.enabled, 'ادامه با دیجی‌کوین', 'پیشنهاد ۱۰ ثانیه‌ای بعد از شکست')}
     ${row('features.streak', f.streak, 'استریک روزانه', 'شمارش روزها و پاداش روزانه')}
@@ -288,7 +289,7 @@ function a01(w) {
     ${row('features.haptics', f.haptics, 'لرزش', 'در صورت پشتیبانی اپ میزبان')}
     </section></div>`;
 }
-const BADGES = ['badge_3', 'badge_5', 'badge_7', 'badge_10'];
+const BADGES = ['badge_5', 'badge_10', 'badge_15', 'badge_20'];   // the redesign's badge family (player/assets/badges)
 function a02(w) {
   const rows = w.checkpoints.map((c, i) => {
     const p = `checkpoints[${i}]`, n = (c.badge_asset_id.match(/\d+/) || [''])[0];
@@ -299,15 +300,20 @@ function a02(w) {
         <select data-path="${p}.badge_asset_id" data-kind="text" aria-label="نشان چک‌پوینت ${fa(i + 1)}" ${disabled()} style="border:0;background:transparent;color:inherit;font:inherit">
         ${[...new Set([...BADGES, c.badge_asset_id])].map(b => `<option ${b === c.badge_asset_id ? 'selected' : ''}>${esc(b)}</option>`).join('')}</select></span></td>
       <td>${input(p + '.reward', c.reward, { unit: 'کوین' })}</td>
+      <td>${input(p + '.comparison_percent', c.comparison_percent, { kind: 'int-opt', unit: '٪', name: `درصد متن مقایسه چک‌پوینت ${fa(i + 1)}` })}</td>
       <td>${sw(p + '.enabled', c.enabled, 'فعال بودن چک‌پوینت ' + (i + 1))}</td>
       <td>${canEdit() ? `<button type="button" class="ad-iconbtn" data-act="cp-del" data-i="${i}" aria-label="حذف چک‌پوینت ${fa(i + 1)}">×</button>` : ''}</td></tr>`;
   }).join('');
   const top = (S.ov.draft_errors || {}).checkpoints;
-  return `<div class="qa-note">فقط پاداش بالاترین چک‌پوینت هر دست پرداخت می‌شود. گام‌ها باید یکتا و صعودی باشند. حذف یک گام، تاریخچه و پاداش‌های قبلی را پاک نمی‌کند.</div>`
-    + `<section class="qa-card"><div class="qa-table-wrap"><table class="qa-table"><thead><tr><th>ترتیب</th><th>حد پاسخ درست</th><th>عنوان</th><th>نشان</th><th>پاداش</th><th>فعال</th><th><span class="sr-only" hidden>حذف</span></th></tr></thead><tbody>${rows}</tbody></table></div>
+  const sum = w.checkpoints.filter(c => c.enabled).reduce((t, c) => t + (c.reward || 0), 0);
+  return `<div class="qa-note">پاداش هر چک‌پوینت همان لحظه‌ی عبور از آن، یک بار در هر دست پرداخت می‌شود (مجموع یک دست کامل: ${fa(sum)} دیجی‌کوین). «درصد متن مقایسه» متن ثابت محصول است («از … درصد آدما باهوش‌تری!»)، نه آمار اندازه‌گیری‌شده؛ خالی یعنی بدون این متن. گام‌ها باید یکتا و صعودی باشند. حذف یک گام، تاریخچه و پاداش‌های قبلی را پاک نمی‌کند.</div>`
+    + `<section class="qa-card"><div class="qa-table-wrap"><table class="qa-table"><thead><tr><th>ترتیب</th><th>حد پاسخ درست</th><th>عنوان</th><th>نشان</th><th>پاداش</th><th>درصد متن</th><th>فعال</th><th><span class="sr-only" hidden>حذف</span></th></tr></thead><tbody>${rows}</tbody></table></div>
     ${top ? `<span class="qa-err">${esc(errText('checkpoints', top))}</span>` : ''}
     ${canEdit() ? `<div>${btn('+ افزودن چک‌پوینت', 'cp-add', { kind: 'text' })}</div>` : ''}
-    <p class="qs-note">نشان‌ها از مجموعه نشان‌های تأییدشده انتخاب می‌شوند؛ کمپین‌ها با شناسه چک‌پوینت (مثل cp_7) به آن ارجاع می‌دهند.</p></section>`;
+    <p class="qs-note">نشان‌ها از مجموعه نشان‌های تأییدشده انتخاب می‌شوند؛ کمپین‌ها با شناسه چک‌پوینت (مثل cp_10) به آن ارجاع می‌دهند.</p></section>
+    <section class="qa-card"><h2>جایزه رسیدن به رکورد</h2>
+    <div class="qa-field"><label for="f:record_reward">مبلغ<small>یک بار در هر دست، وقتی امتیاز به رکورد تمام دوران (ثبت‌شده در شروع دست) برسد</small></label><div>${input('record_reward', w.record_reward, { unit: 'دیجی‌کوین' })}</div></div>
+    <div class="qa-field"><label for="f:record_reward_above">فقط برای رکورد بالاتر از<small>صفر یعنی هر رکوردی؛ مبلغ صفر یعنی خاموش</small></label><div>${input('record_reward_above', w.record_reward_above, { unit: 'جواب درست' })}</div></div></section>`;
 }
 function a03(w) {
   const c = w.continue_rule;
@@ -319,9 +325,9 @@ function a03(w) {
     <h2>استریک روزانه</h2>
     <div class="qa-field"><label for="f:streak_reward">پاداش استریک<small>یک بار برای اولین دست کامل هر روز${w.features.streak ? '' : ' · استریک در A01 خاموش است'}</small></label><div>${input('streak_reward', w.streak_reward, { unit: 'دیجی‌کوین' })}</div></div>
     </section><section class="qa-card"><h2>پیش‌نمایش برای بازیکن</h2><div class="ad-preview"><div class="ad-sheet" aria-label="پیش‌نمایش پیشنهاد ادامه">
-      <h3>یه فرصت دیگه؟</h3><div class="cost"><span>هزینه</span><b><span class="qs-coin"></span>${fa(c.cost)} دیجی‌کوین</b></div>
+      <h3>باختی!</h3><div class="cost"><span>هزینه</span><b><span class="qs-coin"></span>${fa(c.cost)} دیجی‌کوین</b></div>
       <div class="cost"><span>موجودی</span><b>موجودی واقعی بازیکن</b></div>
-      <button type="button" class="qs-btn qs-btn--primary qs-btn--block" tabindex="-1" aria-hidden="true">ادامه با ${fa(c.cost)} دیجی‌کوین</button>
+      <button type="button" class="qs-btn qs-btn--primary qs-btn--block" tabindex="-1" aria-hidden="true">ادامه</button><p class="qs-note">${fa(c.cost)} دیجی‌کوین</p>
     </div></div>${c.enabled ? '' : '<p class="qs-note">ادامه خاموش است؛ پیشنهاد به بازیکن نمایش داده نمی‌شود.</p>'}</section></div>`;
 }
 function a04(w) {
@@ -523,7 +529,7 @@ function dialog() {
       <ul>${ch.map(c => `<li>${esc(label(c.field))}: ${esc(val(c.field, c.before))} ← ${esc(val(c.field, c.after))}</li>`).join('')}</ul>
       ${S.ov.draft_daily_cap !== S.ov.active_daily_cap ? `<p>سقف پاداش روزانه هر حساب: ${fa(S.ov.active_daily_cap)} ← ${fa(S.ov.draft_daily_cap)} دیجی‌کوین</p>` : ''}${reason(false)}`, `انتشار نسخه ${fa(S.ov.draft.version)}`);
   }
-  if (d.kind === 'kill') return wrap('بازی برای همه خاموش شود؟', `<p>شروع دست جدید متوقف می‌شود. دست‌های در جریان در فاصله بعدی بین سؤال‌ها پایان می‌یابند و پاداش بالاترین چک‌پوینت آن‌ها حفظ می‌شود. پرداخت‌های ادامه که باز هستند ابتدا تعیین تکلیف یا بازگردانده می‌شوند.</p>
+  if (d.kind === 'kill') return wrap('بازی برای همه خاموش شود؟', `<p>شروع دست جدید متوقف می‌شود. دست‌های در جریان در فاصله بعدی بین سؤال‌ها پایان می‌یابند و پاداش چک‌پوینت‌هایی که گرفته‌اند سر جایش می‌ماند. پرداخت‌های ادامه که باز هستند ابتدا تعیین تکلیف یا بازگردانده می‌شوند.</p>
       <p>پیام به بازیکن: «${esc(S.ops.message.trim() || 'متن پیش‌فرض بازی')}»</p>${reason(false)}`, 'خاموش کن', 'danger');
   if (d.kind === 'game-on') return wrap('بازی دوباره روشن شود؟', `<p>شروع دست جدید برای همه بازیکنان دوباره ممکن می‌شود.</p>${reason(false)}`, 'روشن کن');
   if (d.kind === 'block') return wrap('این بازیکن مسدود شود؟', `<p>بازیکن تا رفع مسدودیت توسط مدیر نمی‌تواند بازی کند و پیام «بازی غیرفعال شده است» را می‌بیند. دست در جریان او همان لحظه پایان می‌یابد و هیچ پاداشی از آن دست (چک‌پوینت و استریک) پرداخت نمی‌شود و آن دست در رکورد و استریک حساب نمی‌شود.</p>
@@ -761,7 +767,7 @@ document.addEventListener('click', async ev => {
     case 'cp-add': {
       const cps = S.work.checkpoints, last = cps[cps.length - 1], step = (last ? last.required_correct : 0) + 1;
       let id = 'cp_' + step; while (cps.some(c => c.id === id)) id += '_n';
-      cps.push({ id, required_correct: step, title: '', badge_asset_id: BADGES[BADGES.length - 1], reward: 0, enabled: true });
+      cps.push({ id, required_correct: step, title: '', badge_asset_id: BADGES[BADGES.length - 1], reward: 0, enabled: true, comparison_percent: null });
       saveDraft(); break;
     }
     case 'cp-del': S.work.checkpoints.splice(+t.dataset.i, 1); saveDraft(); break;

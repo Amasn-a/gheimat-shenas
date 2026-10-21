@@ -63,6 +63,8 @@ public final class ConfigValidator {
                 if (cp.reward() < 0) e.put(f + ".reward", "must not be negative");
                 max(e, f + ".reward", cp.reward(), bounds.maxCheckpointReward());
                 if (cp.requiredCorrect() < 1) e.put(f + ".required_correct", "must be a positive integer");
+                if (cp.comparisonPercent() != null && (cp.comparisonPercent() < 1 || cp.comparisonPercent() > 99))
+                    e.put(f + ".comparison_percent", "must be between 1 and 99");
                 if (cp.enabled()) {
                     if (!steps.add(cp.requiredCorrect())) e.put(f + ".required_correct", "steps must be unique");
                     else if (cp.requiredCorrect() <= prev) e.put(f + ".required_correct", "enabled steps must be in ascending order");
@@ -80,6 +82,10 @@ public final class ConfigValidator {
             max(e, "continue.cap", c.continueRule().cap(), bounds.maxContinueCap());
         }
         if (c.streakReward() < 0) e.put("streak_reward", "must not be negative");
+        if (!c.payOnCrossing()) e.put("pay_on_crossing", "fixed at true since the redesign of 2026-10-21");
+        if (c.recordReward() < 0) e.put("record_reward", "must not be negative");
+        max(e, "record_reward", c.recordReward(), bounds.maxCheckpointReward());
+        if (c.recordRewardAbove() < 0) e.put("record_reward_above", "must not be negative");
         max(e, "streak_reward", c.streakReward(), bounds.maxStreakReward());
 
         List<DifficultyBand> bands = c.bands();

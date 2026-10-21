@@ -24,6 +24,11 @@ import java.util.List;
  * @param payoutAlertThreshold     total daily DigiCoin payout alert (R-47); null = owner value pending, alert disabled
  * @param priceChangeThresholdBp   catalog price-change exclusion (R-42); null = pending, filter disabled
  * @param features                 A01 P0 feature switches
+ * @param payOnCrossing            redesign 2026-10-21: every checkpoint pays its own reward once, when it is crossed (0/1/3/5,
+ *                                 9 in a run that reaches 20). False in older versions (highest checkpoint only, at run end, R-17).
+ * @param recordReward             redesign 2026-10-21 §13: DigiCoin for matching the all-time record frozen at run start, once
+ *                                 per run, when that record is above {@code recordRewardAbove}. 0 = off (older versions).
+ * @param recordRewardAbove        the record must be strictly above this (launch: 20)
  */
 public record GameConfig(
         int playsPerDay,
@@ -42,13 +47,22 @@ public record GameConfig(
         List<DifficultyBand> bands,
         Long payoutAlertThreshold,
         Integer priceChangeThresholdBp,
-        Features features) {
+        Features features,
+        boolean payOnCrossing,
+        int recordReward,
+        int recordRewardAbove) {
 
     /** A01 P0 switches. Haptics only take effect where the host supports them. */
     public record Features(boolean streak, boolean share, boolean products, boolean haptics) {}
 
-    /** @param requiredCorrect score at which the checkpoint is reached; reward is a total, not an increment (R-17) */
-    public record Checkpoint(String id, int requiredCorrect, String title, String badgeAssetId, int reward, boolean enabled) {}
+    /**
+     * @param requiredCorrect   score at which the checkpoint is reached
+     * @param reward            with payOnCrossing: paid once when crossed; otherwise the run total of the highest one (R-17)
+     * @param comparisonPercent the fixed product copy «از {x} درصد آدما باهوش‌تری!» / «تو بهتر از {x} درصد دیجی‌کالایی‌ها بودی!»
+     *                          (redesign §1: product copy, not a measured statistic); null = no percentage line
+     */
+    public record Checkpoint(String id, int requiredCorrect, String title, String badgeAssetId, int reward, boolean enabled,
+                             Integer comparisonPercent) {}
 
     public record ContinueRule(boolean enabled, int cost, int cap) {}
 
@@ -70,9 +84,16 @@ public record GameConfig(
         return enabledCheckpoints().stream().mapToInt(Checkpoint::reward).max().orElse(0);
     }
 
+    /** Most a single run can earn from checkpoints and the record reward. */
+    public long runRewardCeiling() {
+        long cps = payOnCrossing ? enabledCheckpoints().stream().mapToLong(Checkpoint::reward).sum() : highestCheckpointReward();
+        return cps + Math.max(0, recordReward);
+    }
+
     /**
-     * R-47: plays per day × highest checkpoint reward + daily streak reward (launch: 3 × 40 + 1 = 121). Exact: a value
-     * that does not fit throws instead of wrapping; {@code ConfigValidator} rejects such a configuration before publish.
+     * R-47: plays per day × the most one run can earn + daily streak reward. Launch (redesign 2026-10-21):
+     * 3 × (0 + 1 + 3 + 5 + 1) + 1 = 31. Exact: a value that does not fit throws instead of wrapping;
+     * {@code ConfigValidator} rejects such a configuration before publish.
      */
     public int dailyAccountCap() {
         return Math.toIntExact(dailyAccountCapExact());
@@ -80,6 +101,6 @@ public record GameConfig(
 
     /** The cap in 64-bit arithmetic (int × int + int cannot overflow a long), for validation and admin display. */
     public long dailyAccountCapExact() {
-        return (long) playsPerDay * highestCheckpointReward() + effectiveStreakReward();
+        return (long) playsPerDay * runRewardCeiling() + effectiveStreakReward();
     }
 }

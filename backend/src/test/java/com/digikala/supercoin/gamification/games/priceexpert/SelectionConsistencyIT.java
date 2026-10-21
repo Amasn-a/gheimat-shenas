@@ -45,17 +45,17 @@ class SelectionConsistencyIT {
     }
 
     @Test void deadEndSampleDoesNotHideAValidSeenCandidate() {
-        // reference 100 at score 2 (band 0, > 50 %); next question at score 3 needs band 1 (30–50 %)
+        // reference 100 at score 4 (band 0, > 50 %); next question at score 5 needs band 1 (30–50 %)
         List<ImportRow> rows = new ArrayList<>(List.of(p(1, 100), p(2, 250), p(3, 350)));
-        for (int i = 0; i < 60; i++) rows.add(p(1_000 + i, 200));          // unseen, but each one is a dead end at score 3
+        for (int i = 0; i < 60; i++) rows.add(p(1_000 + i, 200));          // unseen, but each one is a dead end at score 5
         int v = publish(rows);
         String user = "u_sample";
         env.sql("INSERT INTO pe_seen_product (user_id, show_date, dkp, first_seen_at, last_seen_at) VALUES (?, ?, 2, now(), now()), (?, ?, 3, now(), now())",
                 user, today(), user, today());
-        Optional<Selected> s = env.m.ctx.tx().inTransaction(() -> env.m.selection.chooseComparison(v, cfg, 100, 2, Set.of(1L), user, today()));
+        Optional<Selected> s = env.m.ctx.tx().inTransaction(() -> env.m.selection.chooseComparison(v, cfg, 100, 4, Set.of(1L), user, today()));
         assertTrue(s.isPresent(), "250 → 350 is a valid path; the 48-candidate sample must not be read as exhaustion");
         assertTrue(Set.of(2L, 3L).contains(s.get().product().dkp()));
-        assertTrue(env.m.ctx.tx().inTransaction(() -> env.m.selection.canReveal(v, cfg, 100, 2, Set.of(1L))));
+        assertTrue(env.m.ctx.tx().inTransaction(() -> env.m.selection.canReveal(v, cfg, 100, 4, Set.of(1L))));
     }
 
     @Test void emptyPriceRangeIsNoCandidateNotAnError() {

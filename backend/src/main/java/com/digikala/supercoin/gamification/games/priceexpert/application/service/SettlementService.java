@@ -65,7 +65,7 @@ public final class SettlementService {
             Participation p = ctx.players().lockParticipation(run.userId, run.startBusinessDate);
             ctx.players().saveParticipation(new Participation(p.userId(), p.date(), p.playsUsed(), p.finishedRuns() + 1, true));
             if (cfg.effectiveStreakReward() > 0 && ctx.ledger().streakRewardOf(run.userId, run.startBusinessDate).isEmpty()) {
-                createCredit(run, OperationType.STREAK_REWARD, cfg.effectiveStreakReward(), at);
+                createCredit(run, OperationType.STREAK_REWARD, cfg.effectiveStreakReward(), at, null);
             }
             LocalDate today = BusinessCalendar.dateOf(at);
             List<LocalDate> dates = ctx.players().streakEligibleDates(run.userId, today.minusDays(400));
@@ -73,9 +73,12 @@ public final class SettlementService {
             player.streakDays = s.days();
             player.streakLastDate = s.lastDate();
 
-            // Highest checkpoint only, paid at run end (R-17); never cumulative.
-            GameConfig.Checkpoint cp = cfg.checkpoints().stream().filter(c -> c.id().equals(run.highestCheckpointId)).findFirst().orElse(null);
-            if (cp != null && cp.reward() > 0) createCredit(run, OperationType.CHECKPOINT_REWARD, cp.reward(), at);
+            // Versions before the redesign: highest checkpoint only, paid at run end (R-17). Since the redesign each
+            // checkpoint is paid when it is crossed (crossingRewards), so nothing is left to pay here.
+            if (!cfg.payOnCrossing()) {
+                GameConfig.Checkpoint cp = cfg.checkpoints().stream().filter(c -> c.id().equals(run.highestCheckpointId)).findFirst().orElse(null);
+                if (cp != null && cp.reward() > 0) createCredit(run, OperationType.CHECKPOINT_REWARD, cp.reward(), at, "run-end");
+            }
 
             run.campaignOutcome = campaignOutcome(run, cfg, at);
         }
@@ -92,10 +95,26 @@ public final class SettlementService {
     }
 
     /**
+     * Redesign 2026-10-21 (§9, §10, §13): the reward of a checkpoint is registered the moment a valid answer crosses it,
+     * once per run and checkpoint; the record reward once per run when the score reaches the record frozen at run start
+     * and that record is above the configured floor. Called inside the answer's settlement (player and run locked);
+     * the unique (run_id, reward_key) index makes a replay, retry or second device unable to create a second credit.
+     */
+    public void crossingRewards(Run run, GameConfig cfg, GameConfig.Checkpoint reached, Instant at) {
+        if (!cfg.payOnCrossing()) return;
+        if (reached != null && reached.reward() > 0) createCredit(run, OperationType.CHECKPOINT_REWARD, reached.reward(), at, reached.id());
+        Integer target = run.bestScoreAtStart;
+        if (cfg.recordReward() > 0 && target != null && target > cfg.recordRewardAbove() && run.score == target)
+            createCredit(run, OperationType.RECORD_REWARD, cfg.recordReward(), at, recordKey(target));
+    }
+
+    public static String recordKey(int target) { return "record:" + target; }
+
+    /**
      * Writes a reward credit into the ledger against the run's start-day cap (R-47, F-03). The part above the cap is
      * held (operation status HELD / held_amount) and raises an alert; nothing above the cap is ever sent to the wallet.
      */
-    public CoinOperation createCredit(Run run, OperationType type, int amount, Instant now) {
+    public CoinOperation createCredit(Run run, OperationType type, int amount, Instant now, String rewardKey) {
         LocalDate capDay = run.startBusinessDate;
         int cap = ctx.ledger().capHighWater(capDay, ctx.config(run.configVersion).dailyAccountCap(), now);
         DailyCredit dc = ctx.ledger().lockDailyCredit(run.userId, capDay);
@@ -109,6 +128,7 @@ public final class SettlementService {
         op.userId = run.userId;
         op.runId = run.runId;
         op.type = type;
+        op.rewardKey = rewardKey;
         op.amount = grant;
         op.heldAmount = held;
         // a daily (streak) reward waits for the player's claim in the daily reward modal (brief 2026-10-20); others are paid at once

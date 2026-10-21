@@ -19,7 +19,8 @@ import static org.junit.jupiter.api.Assertions.*;
  * Difficulty curve audit (owner brief 2026-10-20 §13), end to end on the real 989-product sample. The band oracle below is
  * written from decision R-41 directly, independently of DifficultyPolicy, so a drift in the implementation, the launch
  * configuration or a published A04 version that diverges from R-41 fails here:
- * score 0–2: d > 50% (no upper limit) · 3–4: 30% < d ≤ 50% · 5–6: 15% < d ≤ 30% · 7–9: 8% < d ≤ 15% · 10+: 3% ≤ d ≤ 8%,
+ * score 0–4: d > 50% (no upper limit) · 5–9: 30% < d ≤ 50% · 10–14: 15% < d ≤ 30% · 15–19: 8% < d ≤ 15% · 20+: 3% ≤ d ≤ 8%
+ * (R-41 distances; band starts follow the checkpoints 5/10/15/20 since the redesign of 2026-10-21),
  * with d = 100 × (max / min − 1).
  */
 @TestMethodOrder(MethodOrderer.MethodName.class)
@@ -36,13 +37,13 @@ class DifficultyCurveIT {
     /** R-41, exact integer form: 10,000 × (hi − lo) compared with (basis points × lo). */
     static boolean r41(int score, long a, long b) {
         long hi = Math.max(a, b), lo = Math.min(a, b), lhs = 10_000L * (hi - lo);
-        if (score <= 2) return lhs > 5_000L * lo;
-        if (score <= 4) return lhs > 3_000L * lo && lhs <= 5_000L * lo;
-        if (score <= 6) return lhs > 1_500L * lo && lhs <= 3_000L * lo;
-        if (score <= 9) return lhs > 800L * lo && lhs <= 1_500L * lo;
+        if (score <= 4) return lhs > 5_000L * lo;
+        if (score <= 9) return lhs > 3_000L * lo && lhs <= 5_000L * lo;
+        if (score <= 14) return lhs > 1_500L * lo && lhs <= 3_000L * lo;
+        if (score <= 19) return lhs > 800L * lo && lhs <= 1_500L * lo;
         return lhs >= 300L * lo && lhs <= 800L * lo;
     }
-    static int r41Band(int score) { return score <= 2 ? 0 : score <= 4 ? 1 : score <= 6 ? 2 : score <= 9 ? 3 : 4; }
+    static int r41Band(int score) { return score <= 4 ? 0 : score <= 9 ? 1 : score <= 14 ? 2 : score <= 19 ? 3 : 4; }
 
     static ImportRow p(long dkp, long price) {
         return new ImportRow(dkp, dkp * 10, "کالای آزمایشی " + dkp, "کالای آزمایشی " + dkp, "https://img.test/" + dkp + ".jpg", price, null, "test", true, null);
@@ -67,7 +68,7 @@ class DifficultyCurveIT {
     @Test void a_everyQuestionIsInItsR41Band_beforeAtAndAfterEachCheckpoint() {
         Map<Integer, Integer> seenPerScore = new TreeMap<>();
         for (int run = 0; run < 6; run++) {
-            for (Map<String, Object> q : playCorrect(env.caller("curve" + run), 14)) {
+            for (Map<String, Object> q : playCorrect(env.caller("curve" + run), 22)) {
                 int score = (int) q.get("score");
                 long ref = (long) q.get("ref"), cmp = (long) q.get("cmp");
                 assertEquals(r41Band(score), (int) q.get("band"), "band index at score " + score);
@@ -76,8 +77,8 @@ class DifficultyCurveIT {
                 seenPerScore.merge(score, 1, Integer::sum);
             }
         }
-        // checkpoints at 3 / 5 / 7 / 10: the questions just before, at and after each threshold were all drawn
-        for (int s : new int[]{2, 3, 4, 5, 6, 7, 9, 10, 11}) assertTrue(seenPerScore.containsKey(s), "no question at score " + s + ": " + seenPerScore);
+        // checkpoints at 5 / 10 / 15 / 20: the questions just before, at and after each threshold were all drawn
+        for (int s : new int[]{4, 5, 6, 9, 10, 11, 14, 15, 16, 19, 20, 21}) assertTrue(seenPerScore.containsKey(s), "no question at score " + s + ": " + seenPerScore);
     }
 
     @Test void b_theComparisonIsChosenAtRevealNotBefore_andARetryKeepsIt() {
@@ -176,16 +177,16 @@ class DifficultyCurveIT {
         for (int i = 0; i < 6 && !checked; i++) {
             Caller c = env.caller("score-only" + i);
             String run = env.m.runs.start(c).run().runId();
-            env.sql("UPDATE pe_run SET score = 10 WHERE run_id = ?", run);    // what the server holds is what decides
+            env.sql("UPDATE pe_run SET score = 20 WHERE run_id = ?", run);    // what the server holds is what decides
             RunView q = env.m.runs.reveal(c, run);
             if (!"QUESTION_OPEN".equals(q.state())) { assertEquals("no_products", q.finishReason()); continue; }
             String id = q.question().questionId();
             assertEquals(4, (int) env.count("SELECT band_index FROM pe_question WHERE question_id = ?", id));
-            assertTrue(r41(10, env.scalar("SELECT reference_price FROM pe_question WHERE question_id = ?", id),
+            assertTrue(r41(20, env.scalar("SELECT reference_price FROM pe_question WHERE question_id = ?", id),
                     env.scalar("SELECT comparison_price FROM pe_question WHERE question_id = ?", id)));
             env.m.runs.leave(c, run);
             checked = true;
         }
-        assertTrue(checked, "a band-4 question was drawn for a stored score of 10");
+        assertTrue(checked, "a band-4 question was drawn for a stored score of 20");
     }
 }

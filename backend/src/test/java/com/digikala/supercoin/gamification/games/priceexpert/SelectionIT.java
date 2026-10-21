@@ -66,18 +66,18 @@ class SelectionIT {
         // with 119 in this run, nothing unseen remains: the earliest seen today (dkp 100) comes back, never 119
         Selected s = pick(1_000_000, 0, Set.of(1L, 119L), user).orElseThrow();
         assertEquals(100, s.product().dkp());
-        // the band is never widened: score 3 (30 < d ≤ 50%) has no candidate around 1,000,000 in this catalog
-        assertTrue(pick(1_000_000, 3, Set.of(1L), user).isEmpty());
+        // the band is never widened: score 5 (30 < d ≤ 50%) has no candidate around 1,000,000 in this catalog
+        assertTrue(pick(1_000_000, 5, Set.of(1L), user).isEmpty());
     }
 
     @Test void t20_lookAheadRejectsDeadEnds_andRevealEndsTheRunWhenNothingIsLeft() {
-        // at score 2 the next question needs band 1 (30 < d ≤ 50%): 10,000,000,000 has no such follow-up and is never chosen;
+        // at score 4 the next question needs band 1 (30 < d ≤ 50%): 10,000,000,000 has no such follow-up and is never chosen;
         // every chosen candidate leaves at least one valid next question
         for (int k = 0; k < 40; k++) {
-            Selected s = pick(1_000_000, 2, Set.of(1L), "u_look").orElseThrow();
+            Selected s = pick(1_000_000, 4, Set.of(1L), "u_look").orElseThrow();
             assertNotEquals(300, s.product().dkp());
             long price = s.product().priceToman();
-            boolean next = env.m.ctx.tx().inTransaction(() -> env.m.selection.hasNextQuestion(catalog, cfg, price, 3, Set.of(1L, s.product().dkp())));
+            boolean next = env.m.ctx.tx().inTransaction(() -> env.m.selection.hasNextQuestion(catalog, cfg, price, 5, Set.of(1L, s.product().dkp())));
             assertTrue(next, "candidate " + s.product().dkp() + " is a dead end");
         }
         // an actual run on this catalog eventually ends with no_products, settled normally, no fabricated miss

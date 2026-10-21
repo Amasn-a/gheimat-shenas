@@ -1,3 +1,21 @@
+# Verification log — 2026-10-22 (redesign of 2026-10-21)
+
+## Backend — `gradle -PofflineRepo=/usr/share/maven-repo --offline test`
+- **117 tests, 0 failures** on PostgreSQL 16 (run twice in a row). New `RedesignRewardsIT`: each checkpoint paid once at its crossing (0/1/3/5, no row for 0, 9 at 20), answer replays create nothing; the owner's record-reward table (record 20 → none at 20/21; 21 → one credit at 21; 27 → one at 27, none at 28; re-reading creates nothing); a run pinned to a legacy configuration still pays the highest checkpoint at run end. `PaymentIT.r50_…`: a delivered crossing reward of the same run cannot fund its continue. Existing suites updated to 5/10/15/20, continue 5, cap 31 and band starts 0/5/10/15/20 (intent of each test kept).
+- Start-up migration checked on the development database that still had the old launch configuration: V5 applied, the old version back-filled (`pay_on_crossing: false`), and a new version published with checkpoints 5/10/15/20 and continue 5.
+- `dev/smoke.py` (API smoke against the running backend): passes.
+
+## Player — browser QA against the running backend (Chromium)
+- **`qa/redesign.py`** at **360×640, 390×844 and 430×932**: 29 screenshots per size (87), **0 audit problems** and no console errors. Audit on every screenshot: RTL, no horizontal page scroll, buttons inside the viewport and not covered, touch targets ≥ 44 px, back/close at the physical right, button icons at the physical left, no text past the edge, every rendered element and every loaded font face is Digikala.
+- **`qa/lifecycle.py`: 23/23** — checkpoint celebration mounted once (re-render, reconnect, reload), no tap-anywhere or auto-continue; a tap at the visible zero sends nothing and the server's timeout follows; a pick just before zero stays pending, never a loss; daily reward double tap = one claim, modal closes to the home; loss-home declines the offer once (UI and device Back); purchase response lost / reconciled; payment states failed-retry, failed-end, unknown-applied, late success, not applied, refunded; offline/refresh keeps the same question and deadline and shows the verdict once; quota reset enabled only by the server; light only.
+- **`qa/states.py`: 5/5** — other-device replacement, block, game off, offline before release, campaign code on the loss screen.
+- **`qa/admin_flow.py`**: 21 screens, no page errors (A02 with «درصد متن» and the record reward).
+- `npm run build`: bundle audit passes; the player bundle carries the Digikala font files and `assets/` (badges, trophy).
+
+## Not verified here
+- Real devices / Super App WebView (haptics at 3 s and 1 s, safe areas, font loading on slow networks). The haptic calls go through the host bridge, which is not wired yet.
+- Zoom levels beyond the three sizes; very long product names were covered only by the real catalog sample.
+
 # Verification log — 2026-10-21 (owner brief of 2026-10-20)
 
 Cloud Linux container, PostgreSQL 16, Java 21, headless Chromium. Development mode: fake DigiCoin, dev login, a 150-product QA catalog subset with locally served images. **Not real devices or real WebViews.** Run and passed here unless stated otherwise.

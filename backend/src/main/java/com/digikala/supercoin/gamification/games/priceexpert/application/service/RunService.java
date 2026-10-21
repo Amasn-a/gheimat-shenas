@@ -87,9 +87,11 @@ public final class RunService {
             if (active != null) {                                            // accepted start on another device replaces the old run
                 active.replacedByRunId = newRunId;
                 settlement.finish(active, player, FinishReason.replaced, now);
-                GameConfig oldCfg = ctx.config(active.configVersion);
-                String cpId = active.highestCheckpointId;
-                int reward = oldCfg.checkpoints().stream().filter(c -> c.id().equals(cpId)).mapToInt(GameConfig.Checkpoint::reward).findFirst().orElse(0);
+                // what the replaced run earned: every checkpoint crossed plus the record reward (redesign), or the legacy
+                // run-end credit just created by finish; held parts included, as in the result's checkpoint_reward
+                int reward = ctx.ledger().operationsOfRun(active.runId).stream()
+                        .filter(o -> o.type == OperationType.CHECKPOINT_REWARD || o.type == OperationType.RECORD_REWARD)
+                        .mapToInt(o -> o.amount + o.heldAmount).sum();
                 replaced = new ReplacedRun(active.runId, active.score, reward);
             }
 
@@ -105,6 +107,7 @@ public final class RunService {
             run.catalogVersion = catalogVersion;
             run.campaignId = ctx.campaigns().liveAt(now).map(Campaign::campaignId).orElse(null);
             run.referenceDkp = ref.dkp();
+            run.bestScoreAtStart = player.record;                            // frozen target of the record reward (§13)
             run.nextSeq = 1;
             run.readySince = now;
             run.nextDeadlineAt = now.plusMillis(cfg.inactivityMs());
@@ -219,8 +222,17 @@ public final class RunService {
         // the checkpoint this answer reached, derived from the stored question so that replays report it too
         GameConfig.Checkpoint reached = q.state != QuestionState.CORRECT ? null : ctx.config(run.configVersion).enabledCheckpoints().stream()
                 .filter(cp -> cp.requiredCorrect() == q.scoreBefore + 1).findFirst().orElse(null);
+        // the credits this answer registered (same derivation, so a replay or a second device reports the same ones)
+        java.util.List<CoinOperation> ops = q.state != QuestionState.CORRECT ? java.util.List.of() : ctx.ledger().operationsOfRun(run.runId);
+        RewardStatus cpReward = reached == null ? null : ops.stream()
+                .filter(o -> o.type == OperationType.CHECKPOINT_REWARD && reached.id().equals(o.rewardKey))
+                .findFirst().map(o -> QueryService.rewardStatus(o, ctx.now())).orElse(null);
+        Integer target = run.bestScoreAtStart;
+        RewardStatus recReward = target == null || q.scoreBefore + 1 != target ? null : ops.stream()
+                .filter(o -> o.type == OperationType.RECORD_REWARD && SettlementService.recordKey(target).equals(o.rewardKey))
+                .findFirst().map(o -> QueryService.rewardStatus(o, ctx.now())).orElse(null);
         return new AnswerView(q.questionId, lr.result(), lr.choice(), lr.equalPrices(), lr.revealedPrice(), lr.direction(), run.score,
-                reached == null ? null : ViewAssembler.checkpoint(reached), continuePossible, run.noOfferReason, run.isFinished(),
+                reached == null ? null : ViewAssembler.checkpoint(reached), cpReward, recReward, continuePossible, run.noOfferReason, run.isFinished(),
                 views.run(run, player.record, caller.deviceId()), ctx.now());
     }
 
@@ -257,7 +269,13 @@ public final class RunService {
             if (run.state != RunState.AWAITING_OFFER) return activationView(run, l.player, caller, null, null);
             GameConfig cfg = ctx.config(run.configVersion);
             int cost = cfg.continueRule().cost();
-            if (balance.isEmpty() || balance.getAsLong() < cost) {           // G05.NO_FUNDS: no offer, not even a disabled one
+            // R-50: coins earned in this run cannot fund its continue. Since the redesign they may already be in the wallet
+            // (paid at the crossing), so the delivered or possibly delivered credits of this run are taken out of the balance.
+            long earned = ctx.ledger().operationsOfRun(run.runId).stream()
+                    .filter(o -> (o.type == OperationType.CHECKPOINT_REWARD || o.type == OperationType.RECORD_REWARD)
+                            && (o.status == OperationStatus.SUCCEEDED || o.status == OperationStatus.UNKNOWN))
+                    .mapToLong(o -> o.amount).sum();
+            if (balance.isEmpty() || balance.getAsLong() - earned < cost) {  // G05.NO_FUNDS: no offer, not even a disabled one
                 deadlines.finishAfterMiss(run, l.player, NoOfferReason.no_funds, now);
                 return activationView(run, l.player, caller, balance.isPresent() ? balance.getAsLong() : null, null);
             }

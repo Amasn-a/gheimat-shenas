@@ -34,16 +34,33 @@ class PaymentIT {
         return env.count("SELECT coalesce(sum(CASE kind WHEN 'CHARGE' THEN amount WHEN 'REFUND' THEN -amount ELSE 0 END), 0) FROM pe_fake_wallet_tx WHERE user_id = ? AND applied", "u_" + user);
     }
 
+    record Played(String user, Caller c, String runId, RunView next) {}
+
+    /**
+     * A fresh account's run after {@code correct} right answers, with the next question revealed; another account when the
+     * path runs out of products (the real catalog is sparse at some bands).
+     */
+    Played played(int correct) {
+        for (int attempt = 0; attempt < 8; attempt++) {
+            String u = user();
+            Caller c = env.caller(u);
+            String run = env.m.runs.start(c).run().runId();
+            RunView q = env.m.runs.reveal(c, run);
+            for (int i = 0; i < correct && q.question() != null; i++) {
+                env.m.runs.answer(c, q.question().questionId(), Choice.valueOf(env.rightChoice(run)), q.question().t0().plusMillis(1000));
+                q = env.m.runs.reveal(c, run);
+            }
+            if (q.question() != null) return new Played(u, c, run, q);
+        }
+        throw new AssertionError("no path with " + (correct + 1) + " questions in 8 attempts");
+    }
+
     /** start → (correct × n) → wrong answer; returns the miss without activating the offer. */
     Miss miss(int correctFirst) {
-        String u = user();
-        Caller c = env.caller(u);
-        String run = env.m.runs.start(c).run().runId();
-        for (int i = 0; i < correctFirst; i++) {
-            RunView q = env.m.runs.reveal(c, run);
-            env.m.runs.answer(c, q.question().questionId(), Choice.valueOf(env.rightChoice(run)), q.question().t0().plusMillis(1000));
-        }
-        RunView q = env.m.runs.reveal(c, run);
+        Played p = played(correctFirst);
+        String u = p.user(), run = p.runId();
+        Caller c = p.c();
+        RunView q = p.next();
         AnswerView a = env.m.runs.answer(c, q.question().questionId(), Choice.valueOf(TestEnv.flip(env.rightChoice(run))), q.question().t0().plusMillis(1500));
         assertEquals("wrong", a.result());
         assertTrue(a.continuePossible());
@@ -80,7 +97,7 @@ class PaymentIT {
         assertEquals("FINISHED", a.run().state());
         env.m.admin.setAvailability(EDITOR, true, null, "test");
         Miss m2 = miss(0);
-        env.balance(m2.user(), 9);
+        env.balance(m2.user(), 4);                                      // one below the continue cost of 5
         ActivationView b = activateAfterFeedback(m2);
         assertNull(b.offer());
         assertEquals("no_funds", b.noOfferReason());
@@ -97,18 +114,25 @@ class PaymentIT {
     // ------------------------------------------------------------------------------------------------ T22, T24
 
     @Test void t22_confirmedBeforeExpiryGivesOneContinueAndOneDebit() throws Exception {
-        Miss m = miss(3);
+        Miss m = miss(5);
         ActivationView a = activateAfterFeedback(m);
+        for (int k = 0; k < 8 && a.offer() == null && "no_products".equals(a.noOfferReason()); k++) {   // sparse band: another path
+            m = miss(5);
+            a = activateAfterFeedback(m);
+        }
+        assertNotNull(a.offer(), a.noOfferReason());
+        Miss mm = m;
+        ActivationView aa = a;
         List<OperationView> ops = Collections.synchronizedList(new ArrayList<>());
-        env.parallel(5, i -> ops.add(env.m.runs.continueOffer(m.c(), a.offer().offerId(), env.clock.instant())));   // double taps / retries
+        env.parallel(5, i -> ops.add(env.m.runs.continueOffer(mm.c(), aa.offer().offerId(), env.clock.instant())));   // double taps / retries
         assertEquals(1, ops.stream().map(OperationView::operationId).distinct().count(), "one operation per offer");
         RunView after = env.m.queries.run(m.c(), m.runId());
         assertEquals("READY", after.state());
-        assertEquals(3, after.score());
-        assertEquals("cp_3", after.highestCheckpoint().checkpointId());
+        assertEquals(5, after.score());
+        assertEquals("cp_5", after.highestCheckpoint().checkpointId());
         assertEquals(m.refPrice(), after.reference().price(), "same reference after a continue");
         assertEquals(1, after.continuesUsed());
-        assertEquals(110, env.walletBalance(m.user()), "exactly one debit of 10");
+        assertEquals(115, env.walletBalance(m.user()), "exactly one debit of 5");
         assertEquals(1, env.count("SELECT count(*) FROM pe_coin_operation WHERE run_id = ? AND type = 'CHARGE'", m.runId()));
         // the failed comparison is not drawn again
         long failed = env.scalar("SELECT comparison_dkp FROM pe_question WHERE question_id = ?", m.questionId());
@@ -147,17 +171,46 @@ class PaymentIT {
         assertNull(b.offer(), "an unreadable balance counts as too low (R-63)");
         assertEquals("no_funds", b.noOfferReason());
 
-        // 5 coins of checkpoint 3 earned in this run are paid only at its end, so 5 + 5 cannot fund a 10-coin continue
-        String u = user();
-        env.balance(u, 5);
-        Caller c = env.caller(u);
-        String run = env.m.runs.start(c).run().runId();
-        for (int i = 0; i < 3; i++) { RunView q = env.m.runs.reveal(c, run); env.m.runs.answer(c, q.question().questionId(), Choice.valueOf(env.rightChoice(run)), q.question().t0().plusMillis(800)); }
-        RunView q = env.m.runs.reveal(c, run);
+        // R-50: the 1 coin of checkpoint 10 registered in this run (pay on crossing, delivered later by the ledger worker)
+        // does not make 4 + 1 fund a 5-coin continue
+        Played p = played(10);
+        String u = p.user(), run = p.runId();
+        Caller c = p.c();
+        env.balance(u, 4);
+        RunView q = p.next();
         env.m.runs.answer(c, q.question().questionId(), Choice.valueOf(TestEnv.flip(env.rightChoice(run))), q.question().t0().plusMillis(800));
         env.clock.advance(1_700);
+        assertEquals(1, env.count("SELECT count(*) FROM pe_coin_operation WHERE run_id = ? AND type = 'CHECKPOINT_REWARD'", run));
         assertNull(env.m.runs.activateOffer(c, run).offer());
         assertEquals(0, env.count("SELECT count(*) FROM pe_coin_operation WHERE run_id = ? AND type = 'CHARGE'", run));
+    }
+
+    /** Wallet {@code start}, 10 correct (cp_10 pays 1), credit delivered, then a miss; returns the activation. */
+    ActivationView missAfterDeliveredCrossingReward(long start) {
+        for (int attempt = 0; attempt < 8; attempt++) {
+            Played p = played(10);
+            env.balance(p.user(), start);
+            env.drainLedger();                                               // the cp_10 credit reaches the wallet
+            assertEquals("SUCCEEDED", env.scalar("SELECT status FROM pe_coin_operation WHERE run_id = ? AND reward_key = 'cp_10'", p.runId()));
+            assertEquals(start + 1, env.walletBalance(p.user()));
+            RunView q = p.next();
+            env.m.runs.answer(p.c(), q.question().questionId(), Choice.valueOf(TestEnv.flip(env.rightChoice(p.runId()))), q.question().t0().plusMillis(800));
+            env.clock.advance(1_700);
+            ActivationView a = env.m.runs.activateOffer(p.c(), p.runId());
+            if (!"no_products".equals(a.noOfferReason())) return a;         // sparse band: another path
+        }
+        throw new AssertionError("no path left a continue possible in 8 attempts");
+    }
+
+    @Test void r50_aDeliveredCrossingRewardOfThisRunCannotFundItsContinue() {
+        ActivationView a = missAfterDeliveredCrossingReward(4);              // wallet 4 + 1 earned in this run = 5
+        assertNull(a.offer(), "4 of the player's own coins are below the cost of 5");
+        assertEquals("no_funds", a.noOfferReason());
+        assertEquals("FINISHED", a.run().state());
+
+        ActivationView ok = missAfterDeliveredCrossingReward(5);             // control: wallet 5 + 1 earned = 6
+        assertNotNull(ok.offer(), "5 of the player's own coins cover the cost");
+        assertEquals(5, ok.offer().cost());
     }
 
     // ------------------------------------------------------------------------------------------------ T25, T26, T28
@@ -282,7 +335,7 @@ class PaymentIT {
         assertEquals(a.offer().deadline(), op.run().offer().deadline());
         OperationView retry = env.m.runs.continueOffer(m.c(), a.offer().offerId(), env.clock.instant());
         assertEquals("succeeded", retry.status());
-        assertEquals(110, env.walletBalance(m.user()));
+        assertEquals(115, env.walletBalance(m.user()));
     }
 
     // ------------------------------------------------------------------------------------------------ T27
@@ -348,26 +401,25 @@ class PaymentIT {
         env.clock.advance(1_500);
         env.drainLedger();
         assertEquals("READY", env.scalar("SELECT state FROM pe_run WHERE run_id = ?", m.runId()), "confirmed before the deadline: continue granted");
-        assertEquals(110, env.walletBalance(m.user()));
+        assertEquals(115, env.walletBalance(m.user()));
         assertEquals(1, env.count("SELECT count(*) FROM pe_fake_wallet_tx WHERE provider_ref = ?", op.operationId()), "one debit at the provider");
     }
 
     @Test void t29_crashAfterOutboxWriteBeforeDelivery_andAfterRefundBeforeAck() {
-        // a reward written with the finish but never delivered before the crash
-        String u = user();
-        Caller c = env.caller(u);
-        String run = env.m.runs.start(c).run().runId();
-        for (int i = 0; i < 3; i++) { RunView q = env.m.runs.reveal(c, run); env.m.runs.answer(c, q.question().questionId(), Choice.valueOf(env.rightChoice(run)), q.question().t0().plusMillis(700)); }
+        // a reward written at the checkpoint crossing but never delivered before the crash
+        Played p = played(10);
+        String u = p.user(), run = p.runId();
+        Caller c = p.c();
         env.m.runs.leave(c, run);
         assertEquals(1, env.count("SELECT count(*) FROM pe_coin_operation WHERE run_id = ? AND type = 'CHECKPOINT_REWARD' AND status = 'PENDING'", run));
         env.rebuild();
         env.drainLedger();
         env.drainLedger();
-        assertEquals(125, env.walletBalance(u), "checkpoint 5 delivered after the crash; the daily reward waits for its claim");
+        assertEquals(121, env.walletBalance(u), "checkpoint 10 (1) delivered after the crash; the daily reward waits for its claim");
         env.m.dailyRewards.claim(c);
         env.m.dailyRewards.claim(c);                                     // a repeated claim credits nothing more
         env.drainLedger();
-        assertEquals(126, env.walletBalance(u), "checkpoint 5 + daily reward 1, each once");
+        assertEquals(122, env.walletBalance(u), "checkpoint 10 reward 1 + daily reward 1, each once");
 
         // a refund the provider applied but whose answer was lost
         Miss m = miss(0);

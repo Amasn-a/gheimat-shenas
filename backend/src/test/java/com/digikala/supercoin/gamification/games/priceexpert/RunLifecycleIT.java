@@ -73,27 +73,36 @@ class RunLifecycleIT {
     // ------------------------------------------------------------------------------------------------ T03, T04, T15
 
     @Test void t03_otherDeviceReplacesTheRun_settledOnce_openQuestionAddsNothing() {
-        String u = user();
-        Caller a = env.caller(u, 0), b = env.caller(u, 1);
-        String run1 = env.m.runs.start(a).run().runId();
-        // reach checkpoint 3 on device A, then leave a question open
-        for (int i = 0; i < 3; i++) { RunView q = reveal(a, run1); answer(a, q, true, 2000); }
-        reveal(a, run1);
+        Caller a = null, b = null;
+        String run1 = null;
+        for (int attempt = 0; attempt < 8 && run1 == null; attempt++) {    // the real catalog is sparse at some bands: retry a path
+            String u = user();
+            a = env.caller(u, 0); b = env.caller(u, 1);
+            String r = env.m.runs.start(a).run().runId();
+            // cross checkpoints 10 and 15 on device A (1 + 3 registered at crossing), then leave a question open
+            RunView q = reveal(a, r);
+            for (int i = 0; i < 15 && q.question() != null; i++) { answer(a, q, true, 2000); q = reveal(a, r); }
+            if (q.question() != null) run1 = r;
+        }
+        assertNotNull(run1, "no path with a 16th question in 8 attempts");
+        String run = run1;
+        Caller ca = a, cb = b;
         // device B cannot resume A's run
-        expect("ACTIVE_RUN_OTHER_DEVICE", () -> env.m.runs.reveal(b, run1));
+        expect("ACTIVE_RUN_OTHER_DEVICE", () -> env.m.runs.reveal(cb, run));
         BootstrapView boot = env.m.queries.bootstrap(b);
         assertFalse(boot.activeRun().onThisDevice());
-        // B starts: A's run ends as replaced, its checkpoint reward is created once, the open question is unanswered
+        // B starts: A's run ends as replaced, its crossing rewards stay (no second credit), the open question is unanswered
         StartView s = env.m.runs.start(b);
         assertEquals(run1, s.replacedRun().runId());
-        assertEquals(3, s.replacedRun().score());
-        assertEquals(5, s.replacedRun().checkpointReward());
+        assertEquals(15, s.replacedRun().score());
+        assertEquals(4, s.replacedRun().checkpointReward(), "everything the replaced run earned: 1 + 3");
         assertEquals("replaced", env.scalar("SELECT finish_reason FROM pe_run WHERE run_id = ?", run1));
         assertEquals("UNANSWERED", env.scalar("SELECT state FROM pe_question WHERE run_id = ? ORDER BY seq DESC LIMIT 1", run1));
-        assertEquals(3, env.count("SELECT score FROM pe_run WHERE run_id = ?", run1));
-        assertEquals(1, env.count("SELECT count(*) FROM pe_coin_operation WHERE run_id = ? AND type = 'CHECKPOINT_REWARD' AND amount = 5", run1));
+        assertEquals(15, env.count("SELECT score FROM pe_run WHERE run_id = ?", run1));
+        assertEquals(2, env.count("SELECT count(*) FROM pe_coin_operation WHERE run_id = ? AND type = 'CHECKPOINT_REWARD'", run1));
+        assertEquals(4, env.count("SELECT sum(amount) FROM pe_coin_operation WHERE run_id = ? AND type = 'CHECKPOINT_REWARD'", run1));
         // A discovers the replacement on its next request
-        expect("RUN_REPLACED", () -> env.m.runs.reveal(a, run1));
+        expect("RUN_REPLACED", () -> env.m.runs.reveal(ca, run));
         // the products list of the replaced run never shows the unanswered question's price
         ProductsView pv = env.m.queries.products(a, run1);
         assertNull(pv.items().get(pv.items().size() - 1).gamePrice());
@@ -128,18 +137,18 @@ class RunLifecycleIT {
             c = env.caller(user());
             String r = env.m.runs.start(c).run().runId();
             boolean open = true;
-            for (int i = 0; i < 4 && open; i++) {                        // 3 correct answers, then a fourth question left open
+            for (int i = 0; i < 11 && open; i++) {                       // 10 correct answers (checkpoint 10 pays 1), an 11th question left open
                 RunView q = reveal(c, r);
                 open = q.question() != null;
-                if (open && i < 3) answer(c, q, true, 1500);
+                if (open && i < 10) answer(c, q, true, 1500);
             }
             if (open) run = r;
         }
-        assertNotNull(run, "no path with a fourth question in 8 attempts");
+        assertNotNull(run, "no path with an 11th question in 8 attempts");
         RunView after = env.m.runs.leave(c, run);
         assertEquals("FINISHED", after.state());
         assertEquals("left", after.finishReason());
-        assertEquals(3, after.score());
+        assertEquals(10, after.score());
         assertEquals("UNANSWERED", env.scalar("SELECT state FROM pe_question WHERE run_id = ? ORDER BY seq DESC LIMIT 1", run));
         assertEquals(1, env.count("SELECT count(*) FROM pe_coin_operation WHERE run_id = ? AND type = 'CHECKPOINT_REWARD'", run));
         assertNull(env.m.queries.products(c, run).lossProductId(), "leaving is not a loss target");
@@ -351,22 +360,23 @@ class RunLifecycleIT {
         var admin = new com.digikala.supercoin.gamification.games.priceexpert.application.service.AdminService.Admin("ed", com.digikala.supercoin.gamification.games.priceexpert.application.service.AdminService.Role.EDITOR);
         GameConfig base = LaunchConfig.value();
         var cps = new ArrayList<>(base.checkpoints());
-        cps.set(0, new GameConfig.Checkpoint("cp_3", 3, "قیمت‌یاب تازه‌کار", "badge_3", 6, true));
+        cps.set(0, new GameConfig.Checkpoint("cp_5", 5, "بازاری تازه‌کار", "badge_5", 2, true, 50));
         GameConfig changed = new GameConfig(base.playsPerDay(), base.inputMs(), base.acceptMs(), base.offerMs(), base.offerAcceptMs(), base.paymentResolutionMs(), base.inactivityMs(), base.offerActivationMs(),
-                base.timeoutGraceMs(), base.checkpointAutoContinueMs(), cps, base.continueRule(), base.streakReward(), base.bands(), null, null, base.features());
+                base.timeoutGraceMs(), base.checkpointAutoContinueMs(), cps, base.continueRule(), base.streakReward(), base.bands(), null, null, base.features(), base.payOnCrossing(), base.recordReward(), base.recordRewardAbove());
         var draft = env.m.admin.saveDraft(admin, changed, null);
         assertTrue(draft.errors().isEmpty());
         env.m.admin.publish(admin, draft.version(), cfgV, draft.revision(), "test");
         try {
             env.m.catalog.importAndPublish(com.digikala.supercoin.gamification.games.priceexpert.infrastructure.config.ProductDatabaseReader.read(TestEnv.CATALOG, null), "test-2", "test");
-            for (int i = 0; i < 3; i++) answer(c, reveal(c, s.run().runId()), true, 1000);
+            for (int i = 0; i < 5; i++) answer(c, reveal(c, s.run().runId()), true, 1000);
             RunView view = env.m.queries.run(c, s.run().runId());
             assertEquals(cfgV, view.runConfig().configVersion());
             assertEquals(catV, view.runConfig().catalogVersion());
-            assertEquals(5, view.highestCheckpoint().rewardAmount(), "pinned checkpoint value, not the new 6");
+            assertEquals(0, view.highestCheckpoint().rewardAmount(), "pinned checkpoint value, not the new 2");
+            assertEquals(0, env.count("SELECT count(*) FROM pe_coin_operation WHERE run_id = ? AND type = 'CHECKPOINT_REWARD'", s.run().runId()), "the pinned 0 is what is paid");
             // bands follow the score: changing checkpoints did not move them
-            RunView q4 = reveal(c, s.run().runId());
-            assertEquals(1L, ((Number) env.scalar("SELECT band_index FROM pe_question WHERE question_id = ?", q4.question().questionId())).longValue());
+            RunView q6 = reveal(c, s.run().runId());
+            assertEquals(1L, ((Number) env.scalar("SELECT band_index FROM pe_question WHERE question_id = ?", q6.question().questionId())).longValue());
             // a new run gets the new versions
             env.m.runs.leave(c, s.run().runId());
             StartView s2 = env.m.runs.start(c);

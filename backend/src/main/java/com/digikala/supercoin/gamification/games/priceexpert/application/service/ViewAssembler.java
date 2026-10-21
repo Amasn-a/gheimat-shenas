@@ -62,14 +62,14 @@ public final class ViewAssembler {
     }
 
     public static CheckpointView checkpoint(GameConfig.Checkpoint c) {
-        return new CheckpointView(c.id(), c.title(), c.badgeAssetId(), c.reward(), c.requiredCorrect());
+        return new CheckpointView(c.id(), c.title(), c.badgeAssetId(), c.reward(), c.requiredCorrect(), c.comparisonPercent());
     }
 
     public static RunConfigView runConfig(GameConfig cfg, int configVersion, int catalogVersion) {
         return new RunConfigView(configVersion, catalogVersion, cfg.inputMs(), cfg.acceptMs(), cfg.offerMs(), cfg.offerAcceptMs(), cfg.checkpointAutoContinueMs(),
                 cfg.enabledCheckpoints().stream().map(ViewAssembler::checkpoint).toList(),
                 new ContinueRuleView(cfg.continueRule().enabled(), cfg.continueRule().cost(), cfg.continueRule().cap()),
-                features(cfg));
+                features(cfg), cfg.payOnCrossing(), cfg.recordReward(), cfg.recordRewardAbove());
     }
 
     /** A configuration without switches (older rows) has everything on, as {@link GameConfig#effectiveStreakReward()} assumes. */

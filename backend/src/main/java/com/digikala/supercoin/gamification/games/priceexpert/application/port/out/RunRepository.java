@@ -21,6 +21,8 @@ public interface RunRepository {
     Optional<Run> findRun(String runId);
     Optional<Run> lockActiveRunOfUser(String userId);
     Optional<Run> findActiveRunOfUser(String userId);
+    /** The player's most recently started finished run (home «کالاهای دست قبلی», redesign §4). */
+    Optional<String> latestFinishedRunIdOfUser(String userId);
     void insertRun(Run run);
     void updateRun(Run run);
     List<String> dueRunIds(Instant now, int limit);

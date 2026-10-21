@@ -33,7 +33,7 @@ The defaults for local development are in `.env.example`. `dev/run-backend.sh` s
 
 ## Database notes
 
-- Schema migrations `V1`–`V4`. Every table is prefixed `pe_`. The development fake-wallet tables (`pe_fake_*`) are created too; production never writes them, and they can be dropped there.
+- Schema migrations `V1`–`V5`. Every table is prefixed `pe_`. The development fake-wallet tables (`pe_fake_*`) are created too; production never writes them, and they can be dropped there.
 - **Financial uniqueness is held by partial unique indexes, not by application memory.** Each of these can exist only once:
   - an active run per user;
   - a checkpoint reward per run;
@@ -43,6 +43,8 @@ The defaults for local development are in `.env.example`. `dev/run-backend.sh` s
 - `pe_audit_event` is append-only, enforced by a trigger that rejects UPDATE and DELETE.
 - `pe_idempotency` rows are purged hourly by a worker (24 h retention, proposed).
 - `V4__timing_contract_daily_claim.sql` (brief 2026-10-20) adds the offer's `accept_deadline` (back-filled with the old `deadline`) and `purchase_received_at`, the `CLAIMABLE` status and `claimed_at` for daily rewards, `offer_accept_ms` / `payment_resolution_ms` in stored configurations, and a unique index on (`scope`, `idem_key`) for idempotency keys. At start-up the backend publishes, once, a copy of the active configuration with the launch timing (10 s / 12.5 s, 10 s / 15 s, 60 s resolution) when the active one lacks it; the publish is audited as `system:migration`, and running games keep the version they started with.
+
+- `V5__redesign_rewards.sql` (redesign 2026-10-21) adds `reward_key` to the ledger with one reward per (run, key), the `RECORD_REWARD` type, `pe_run.best_score_at_start`, and back-fills stored configurations with `pay_on_crossing: false`, `record_reward: 0` and `comparison_percent: null` (their old meaning). At start-up the backend publishes, once, a copy of an older active configuration with the redesign values (checkpoints 5/10/15/20 paying 0/1/3/5 when crossed, continue 5, band starts 0/5/10/15/20, record reward 1 above 20); audited as `system:migration`. Deploy it like V4: stop every instance, then start the new version.
 
 ### Deploying V4
 
