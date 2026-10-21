@@ -1,3 +1,38 @@
+# Verification log — 2026-10-21 (owner brief of 2026-10-20)
+
+Cloud Linux container, PostgreSQL 16, Java 21, headless Chromium. Development mode: fake DigiCoin, dev login, a 150-product QA catalog subset with locally served images. **Not real devices or real WebViews.** Run and passed here unless stated otherwise.
+
+## Backend — `gradle -PofflineRepo=/usr/share/maven-repo --offline test`
+
+**111 tests, 0 failures:** DomainRulesTest 8, RunLifecycleIT 20, SelectionIT 3, SelectionConsistencyIT 4, PaymentIT 14, RewardsIT 12, HttpIT 14, ReviewFixesIT 7, TimeLimitedCoinGatewayTest 2, **TimingContractIT 15, DailyRewardIT 5, DifficultyCurveIT 6, DifficultyPerformanceIT 1** (new).
+
+- **TimingContractIT** — answers: click 9.9 s / arrival 12.0 s / response 14.0 s is evaluated; arrival after the visible window is not a rejection reason; 12,499 and 12,500 ms admitted, 12,501 ms expired; a new request at 12,600 ms is rejected and the timeout is stamped at 12,500; admitted-then-retried after the deadline returns the same result; an admitted request that died before its run lock is settled as the answer; admitted answer racing the expiry sweep settles once. Purchases: 10,001 / 14,999 / 15,000 ms admitted, 15,001 ms expired; click 9.8 s / admitted 14 s / charge confirmed 18 s applies the life; a receipt recorded on time is admitted by the expiry path; an on-time receipt that still loses raises `ON_TIME_PURCHASE_EXPIRED`; an unanswered offer expires at the arrival deadline, not at the visible zero; a definitive failure after the arrival deadline ends the run with no life; skip and leave are refused while an admitted purchase is processed; start-up migrates an older active configuration once, audited, and pinned runs keep their timing.
+- **DailyRewardIT** — opening the game is not attendance and the first finished run records one claimable reward; opening the modal claims nothing; taps, retries and a second device credit once; an unconfirmed claim is `processing` then `claimed`, a rejected one is `delayed`, never lost; streak days and attended days follow the existing rules; a blocked player cannot claim and the reward waits.
+- **DifficultyCurveIT** — every question is in its R-41 band before, at and after each checkpoint (checked by an independent oracle); the comparison is chosen at reveal, a retry keeps it; prices come from the run's pinned catalog snapshot after a new catalog is published; invalid rows are filtered at import; extreme easy pairs stay allowed and the seen-today fallback keeps the band; both directions are drawn and the band follows the server score only. **No discrepancy** was found between R-41, `LaunchConfig` and A04, so the curve was not changed.
+- **DifficultyPerformanceIT** — 20,000 generated products, 480 reveals reaching the late bands: p50 8 ms, p95 70–84 ms over runs, max 108 ms (assertion: p95 < 250 ms). Local figure, not a capacity claim.
+- **HttpIT** (+3) — a key reused on another route/object gets `422 IDEMPOTENCY_MISMATCH` and creates nothing; an answer replay after the deadline returns the stored result; the daily reward status/claim over HTTP.
+
+## Player — browser QA against the running backend
+
+- **`qa/brief.py`** at **360×640, 390×844 and 430×932**: 30 screenshots per size (90 total), with a DOM audit on each (RTL, horizontal scroll, buttons under 44×40 px, covered buttons, text past the edge, clipped text, nested vertical scroll). **0 problems.** It also checks the End Screen history: chronological, question ids present, the losing card in view on open (scrollLeft preserved when scrolled back).
+- **`qa/lifecycle.py`**: **15/15** — the 8 earlier checks plus `cp_once` (one celebration mount; re-renders, a reconnect, a visibility recovery and a reload never replay it), `answer_at_zero` (a pick at the visible zero stays «در حال بررسی پاسخ…» and is evaluated), `pick_vs_expiry` (one transition at the boundary), `daily_double_tap` (one claim request), `end_back` (UI and device Back go to the start screen; no POST), `light_only` (a dark system theme still renders light), `purchase_reconcile` (a run read while the purchase request is in flight keeps G06.PENDING, then G06.SUCCESS; this check **fails on 54304a8** and passes after the fix).
+- **`qa/states.py`**: **13/13**, light only, no page errors (timeout, no funds, charge rejected then retried, charge unknown → unconfirmed at `resolve_by` → refunded once, charge confirmed 12 s later → life granted with one debit, device replacement, block, game off, quota, campaign, offline after/before release, motion).
+- **`qa/admin_flow.py`**: 21 screens, no page errors (A01 shows the timing as «۱۰ / ۱۲٫۵» and «۱۰ / ۱۵» ثانیه).
+- **`dev/smoke.py`**: full HTTP path including `offer.accept_deadline` / `resolve_by` and the daily reward state after a run.
+- **Builds:** `npm run build` — player and admin built; bundle audit passed; no `prefers-color-scheme` rule in the player bundle.
+
+## Duplicate checkpoint celebration — before/after probe
+
+On 94ea064 the overlay was part of the screen markup, so the checkpoint guard timer's `render()` at 1.2 s (and any toast, image load or reconnect) rebuilt it and replayed its entrance: **2 mounts, 4 entrance animations** per checkpoint. Now it is mounted once into its own host outside the re-rendered screen: **1 mount, 2 entrance animations** (card + character), and `cp_once` guards it.
+
+## Not verified here
+
+- Real Android/iOS WebViews, safe areas on devices, the Super App host bridge (Back, haptics, native share).
+- The real DigiCoin service (fake by instruction), production login, admin SSO.
+- Network latency between a real WebView and the server: the 2.5 s (answer) and 5 s (purchase) arrival margins were tested with a controlled clock and simulated delays only.
+- A screen-reader pass of the onboarding spotlight and the daily reward modal (accessible labels exist; not tested with TalkBack or VoiceOver).
+- Rolling deploy of V4 (documented as stop-the-world in `SETUP.md`).
+
 # Verification log — 2026-10-20 (second round: strict review of b023340)
 
 Same environment kind as below. Run and passed here unless stated otherwise.

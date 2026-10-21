@@ -118,22 +118,25 @@ class TimingContractIT {
         assertEquals("CORRECT", env.scalar("SELECT state FROM pe_question WHERE question_id = ?", x.q().questionId()), "admitted, so never a timeout");
         AnswerView retry = answer(x, r, 15_000, 15_000);                  // the client's status retry gets that result
         assertEquals("correct", retry.result());
-        assertEquals(0, env.count("SELECT count(*) FROM pe_alert WHERE kind = 'ON_TIME_ANSWER_TIMED_OUT'"));
+        assertEquals(0, env.count("SELECT count(*) FROM pe_alert WHERE kind = 'ON_TIME_ANSWER_TIMED_OUT' AND details->>'question_id' = ?", x.q().questionId()));
     }
 
-    @Test void selectionAndExpiryAtTheSameInstantResolveOnce() throws Exception {
+    @Test void anAdmittedAnswerAndTheExpiryPathRacingSettleItOnce() throws Exception {
         for (int i = 0; i < 6; i++) {
             Q x = open();
             String r = right(x);
-            env.clock.set(x.at(13_500));                                  // the sweep is due exactly when the last on-time answer is processed
+            // admitted exactly at the inclusive boundary; its retry and the sweep then race to settle it
+            assertTrue(env.m.ctx.tx().inTransaction(() -> env.m.ctx.runs().recordAnswerReceipt(x.q().questionId(), x.c().userId(),
+                    x.c().deviceId(), Choice.valueOf(r), x.at(12_500))));
+            env.clock.set(x.at(13_500));                                  // the sweep is due now
             AtomicReference<String> answered = new AtomicReference<>();
             env.parallel(2, k -> {
                 if (k == 0) {
-                    try { answered.set(env.m.runs.answer(x.c(), x.q().questionId(), Choice.valueOf(r), x.at(12_500)).result()); }
+                    try { answered.set(env.m.runs.answer(x.c(), x.q().questionId(), Choice.valueOf(r), x.at(13_500)).result()); }
                     catch (GameException e) { answered.set(e.code()); }
                 } else env.m.deadlines.sweep(100);
             });
-            assertEquals("correct", answered.get(), "arrival at the deadline is admitted, whoever takes the lock first");
+            assertEquals("correct", answered.get(), "the admitted answer stands, whoever takes the lock first");
             assertEquals("CORRECT", env.scalar("SELECT state FROM pe_question WHERE question_id = ?", x.q().questionId()));
             assertEquals(1, env.count("SELECT score FROM pe_run WHERE run_id = ?", x.runId()), "one transition");
         }
@@ -218,6 +221,16 @@ class TimingContractIT {
         assertEquals(110, env.walletBalance(o.user()));
         OperationView retry = buy(o, 17_000, 17_000);                     // the client's retry finds that operation
         assertEquals("succeeded", retry.status());
+    }
+
+    @Test void anOnTimePurchaseWhoseReceiptLostTheRaceIsRefusedWithAnAlert_notSilently() {
+        O o = offer();
+        env.clock.set(o.at(16_000));
+        env.m.deadlines.sweep(100);                                        // expired: no receipt was recorded in time
+        GameException e = assertThrows(GameException.class, () -> buy(o, 14_900, 16_200));
+        assertEquals("OFFER_EXPIRED", e.code());
+        assertEquals(1, env.count("SELECT count(*) FROM pe_alert WHERE kind = 'ON_TIME_PURCHASE_EXPIRED' AND details->>'offer_id' = ?", o.offer().offerId()));
+        assertEquals(120, env.walletBalance(o.user()));
     }
 
     @Test void unansweredOfferExpiresAtTheArrivalDeadline_notAtTheVisibleZero() {

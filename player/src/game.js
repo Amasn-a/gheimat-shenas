@@ -315,6 +315,7 @@ async function claimDaily() {
   } catch (e) {
     if (g !== S.gen) return;
     if (e instanceof ApiError && e.network) { Object.assign(S.ui.daily, { phase: 'error', message: null }); return render(); }   // same key on retry
+    if (e instanceof ApiError && e.code === 'REQUEST_IN_PROGRESS') { S.ui.daily.phase = 'processing'; render(); return pollDaily(); }   // recorded, not failed
     S.keys.daily = null;
     if (e instanceof ApiError && (e.code === 'PLAYER_BLOCKED' || e.status === 401)) { S.ui.daily = null; return handleError(e); }
     Object.assign(S.ui.daily, { phase: 'error', message: 'جایزه الان ثبت نشد؛ جایزه‌ات محفوظه. دوباره امتحان کن.' }); render();
@@ -548,6 +549,8 @@ function applyRun(run, context) {
   if (run.state === 'AWAITING_OFFER') { go(S.fb && S.fb.kind === 'timeout' ? 'G03.TIMEOUT' : 'G03.WRONG_FEEDBACK'); return later(context === 'resume' ? 600 : 0, activateOffer); }
   if (run.state === 'OFFER_OPEN') {
     if (!S.offer || S.offer.offerId !== run.offer.offerId) S.ui.offerOver = false;
+    // a purchase sent but not yet recorded (slow network) is not dropped by a read of the run: only the server's answer ends it
+    if (S.op && !S.op.operationId && S.offer && S.offer.offerId === run.offer.offerId && ['G06.PENDING', 'G06.UNKNOWN'].includes(S.view)) { S.offer = run.offer; return render(); }
     S.offer = run.offer; S.op = null;
     if (['G06.FAILED_END'].includes(S.view)) return render();     // a rejection after the visible window: the sheet waits for the run's end
     go('G05.OFFER'); return tickLoop();
@@ -744,7 +747,7 @@ export async function continueOffer() {
     onOperation(opv);
   } catch (e) {
     if (g !== S.gen) return;
-    if (e instanceof ApiError && e.network) { go('G06.UNKNOWN'); return reconcileRun(); }
+    if (e instanceof ApiError && (e.network || e.code === 'REQUEST_IN_PROGRESS')) { go('G06.UNKNOWN'); return pollOperation(); }   // not a failure
     S.op = null;
     if (e instanceof ApiError && e.code === 'OFFER_EXPIRED') return e.state ? applyRun(e.state) : reconcileRun();
     handleError(e);
@@ -786,12 +789,29 @@ async function pollOperation() {   // 1 s backing off to 5 s; G06.UNKNOWN (with 
       await sleep(delay); delay = Math.min(5000, delay * 1.6);
       if (g !== S.gen || !S.op) return;
       if (S.view === 'G06.PENDING' && now() - S.op.since > 5000) go('G06.UNKNOWN');
-      if (!S.op.operationId) { await reconcileRun(); continue; }
+      if (!S.op.operationId) { await resendPurchase(g); continue; }
       const opId = S.op.operationId;
       try { const o = await api.operation(opId); if (g !== S.gen || !S.op) return; if (S.op.operationId !== opId) continue; onOperation(o, true); }   // the loop continues while still pending
       catch (e) { if (g !== S.gen) return; if (!(e instanceof ApiError) || !e.network) return handleError(e); }
     }
   } finally { S.ui.polling = false; }
+}
+
+/**
+ * The purchase response was lost or is still being processed: the same request (same Idempotency-Key) is sent again
+ * while it could still arrive in time, which returns the admitted operation or admits it once; after that the run is read.
+ */
+async function resendPurchase(g) {
+  const op = S.op, offer = S.offer;
+  if (!op || !offer || clock.serverNow() > clock.ms(offer.acceptDeadline || offer.deadline)) return reconcileRun();
+  try { const opv = await api.continueOffer(offer.offerId, op.key); if (g === S.gen && S.op === op) onOperation(opv, true); }
+  catch (e) {
+    if (g !== S.gen || S.op !== op) return;
+    if (e instanceof ApiError && (e.network || e.code === 'REQUEST_IN_PROGRESS')) return;          // still unknown: next round
+    S.op = null;
+    if (e instanceof ApiError && e.state) return applyRun(e.state);
+    handleError(e);
+  }
 }
 
 /** A late-confirmed debit is refunded by the server; while its sheet is open, look for the refund for 2 minutes (the reconciliation backs off to 60 s). */
@@ -1118,7 +1138,7 @@ function onClick(e) {
     // a run still open (the offer's visible window ended after a rejected payment) is ended by its skip, never left hanging
     'see-result': () => (S.run && S.run.state === 'OFFER_OPEN' && S.offer ? skip() : finished(S.run)),
     'show-result': showResult,
-    recheck: () => { if (S.op && S.op.operationId) api.operation(S.op.operationId).then(o => onOperation(o, true)).catch(() => {}); else reconcileRun(); },
+    recheck: () => { if (S.op && S.op.operationId) api.operation(S.op.operationId).then(o => onOperation(o, true)).catch(() => {}); else if (S.op) resendPurchase(S.gen); else reconcileRun(); },
     'recheck-answer': () => { if (S.q) readSettlement(S.q, S.gen); },
     'to-start': boot,
     share: prepareShare, 'share-send': sendShare, 'share-close': () => { S.share = null; render(); },

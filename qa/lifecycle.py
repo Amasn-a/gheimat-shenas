@@ -15,6 +15,7 @@ Each check drives the real player modules (dev.html) and fails the run on a regr
   daily_double_tap       two taps on «دریافت کن» send one claim
   end_back               Back on the End Screen (on screen or the device's) goes to the start; no run, no payment
   light_only             a dark system theme cannot switch the game to dark
+  purchase_reconcile     a run read while a purchase is in flight keeps it pending (review of 54304a8)
 
 usage: python3 qa/lifecycle.py [check ...]"""
 import asyncio, json, os, sys, time, uuid, urllib.request
@@ -310,8 +311,27 @@ async def c_light_only(b):
     log.append(f"  dark system theme → {r}")
 
 
+async def c_purchase_reconcile(b):
+    u = "lr" + uuid.uuid4().hex[:6]
+    pg = await page(b, u)
+    await pg.click('[data-act="start"]'); await wait_view(pg, "G03.READY"); await pg.wait_for_timeout(300)
+    await pg.click('[data-act="reveal"]'); await wait_view(pg, "G03.QUESTION_ACTIVE"); await pg.wait_for_timeout(300)
+    await pg.click(f'[data-act="ans-{oracle.choice("u_" + u, False)}"]'); await wait_view(pg, "G05.OFFER", 9000)
+    async def slow(route):
+        await asyncio.sleep(2.4); await route.continue_()               # the purchase reaches the server late (client timeout 3 s)
+    await pg.route("**/offers/*/continue", slow)
+    await pg.click('[data-act="continue"]'); await wait_view(pg, "G06.PENDING")
+    await pg.wait_for_timeout(800)
+    await pg.evaluate("() => document.dispatchEvent(new Event('visibilitychange'))")   # back to the app: the run still reads OFFER_OPEN
+    seen = set()
+    for _ in range(30):
+        seen.add(await view(pg)); await pg.wait_for_timeout(100)
+    assert not any(v.startswith("G05.") for v in seen), f"the in-flight purchase was dropped: {seen}"
+    v = await wait_view(pg, ("G06.SUCCESS", "G03.READY"), 12000)
+    log.append(f"  a reconcile during the purchase kept it pending ({sorted(seen)}) → {v}")
+
 CHECKS = [c_checkpoint_reset, c_stale_products, c_share_busy, c_replay_clock, c_body_timeout, c_offer_per_miss, c_copy_state, c_quota_reset,
-          c_cp_once, c_answer_at_zero, c_pick_vs_expiry, c_daily_double_tap, c_end_back, c_light_only]
+          c_cp_once, c_answer_at_zero, c_pick_vs_expiry, c_daily_double_tap, c_end_back, c_light_only, c_purchase_reconcile]
 
 
 async def main():

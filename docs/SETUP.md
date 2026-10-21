@@ -33,7 +33,7 @@ The defaults for local development are in `.env.example`. `dev/run-backend.sh` s
 
 ## Database notes
 
-- One schema migration (`V1`). Every table is prefixed `pe_`. The development fake-wallet tables (`pe_fake_*`) are created too; production never writes them, and they can be dropped there.
+- Schema migrations `V1`–`V4`. Every table is prefixed `pe_`. The development fake-wallet tables (`pe_fake_*`) are created too; production never writes them, and they can be dropped there.
 - **Financial uniqueness is held by partial unique indexes, not by application memory.** Each of these can exist only once:
   - an active run per user;
   - a checkpoint reward per run;
@@ -42,6 +42,14 @@ The defaults for local development are in `.env.example`. `dev/run-backend.sh` s
   - a live charge per offer.
 - `pe_audit_event` is append-only, enforced by a trigger that rejects UPDATE and DELETE.
 - `pe_idempotency` rows are purged hourly by a worker (24 h retention, proposed).
+- `V4__timing_contract_daily_claim.sql` (brief 2026-10-20) adds the offer's `accept_deadline` (back-filled with the old `deadline`) and `purchase_received_at`, the `CLAIMABLE` status and `claimed_at` for daily rewards, `offer_accept_ms` / `payment_resolution_ms` in stored configurations, and a unique index on (`scope`, `idem_key`) for idempotency keys. At start-up the backend publishes, once, a copy of the active configuration with the launch timing (10 s / 12.5 s, 10 s / 15 s, 60 s resolution) when the active one lacks it; the publish is audited as `system:migration`, and running games keep the version they started with.
+
+### Deploying V4
+
+**Stop every backend instance before applying V4, then start the new version.** Do not run old and new instances side by side:
+- the unique index on (`scope`, `idem_key`) fails to build if duplicate keys exist across routes (none are expected; check with `SELECT scope, idem_key FROM pe_idempotency GROUP BY 1,2 HAVING count(*) > 1` and purge expired rows first);
+- an old instance would read and write offers without `accept_deadline` / `purchase_received_at` and would ignore `CLAIMABLE` rewards;
+- an offer opened by an old instance gets `accept_deadline = deadline` (no extra arrival margin); this only affects offers open during the deploy.
 
 ## Running in production (what is still missing)
 

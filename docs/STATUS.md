@@ -22,10 +22,42 @@
 | Continue offer window | Handoff: the window opens at the miss | **F-02:** the window starts at a post-feedback activation call. The server checks eligibility again (game-off, funds). Wrong-answer feedback does not consume the window |
 | Payout cap day | — | **F-03:** a credit counts against the cap of the run's **start** business day, even if it is paid later |
 | Block during a payment | Handoff: end after the payment resolves | Contract: the run ends **immediately**. A debit confirmed afterwards is refunded once (T27) |
-| Answer timing | Older 5 s spec | R-45: the label shows 10 s, input locks at 10,500 ms, and the server accepts up to 11,000 ms inclusive (receive time stamped at ingress) |
+| Answer timing | R-45 (10 s, 10,500 / 11,000 ms) | **Brief 2026-10-20:** 10 s visible window, input locks at the visible zero (10,000 ms); the server admits an answer whose first arrival is ≤ 12,500 ms, inclusive (stamped when the body has been read) |
+| Extra-life timing | R-43 / R-39 (run ends at the 10 s offer deadline; no reservation) | **Brief 2026-10-20:** 10 s visible window; a purchase is admitted when it first arrives ≤ 15,000 ms after the offer opened. An admitted purchase may finish after that; the run waits for the charge result until `resolve_by` (proposed: arrival deadline + 60 s), then ends unconfirmed and a later debit is refunded once |
 | Daily plays, continue, cap | Older spec values | 3 plays a day (R-33). Continue costs 10, limit 1 (R-20). Checkpoints 3/5/7/10 pay 5/10/20/40, highest only. Streak reward 1. Daily cap 121 with a high-water mark |
 | A01 inactivity field | The A01 board draws it as an input | The owner fixed it at 3 minutes, so it is shown **read-only** to avoid changing timing without approval. This only matters if the owner wants it editable |
 | Images | Opaque per-question image proxy (handoff option) | CDN URL released only **after** reveal, never before (T05). The proxy was not built |
+
+## Owner brief of 2026-10-20 — what was implemented
+
+| Area | Implemented | Where |
+|---|---|---|
+| Timing contract | Question 10 s visible / 12.5 s arrival; extra life 10 s visible / 15 s arrival. Deadlines limit the **first arrival** only; admitted operations finish and deliver afterwards. Receipt-first admission for answers and (new) purchases; the expiry sweeps settle or admit a recorded receipt instead of expiring it; alerts `ON_TIME_ANSWER_TIMED_OUT` / `ON_TIME_PURCHASE_EXPIRED` if that ever fails | backend `RunService`, `DeadlineService`, `PaymentService`, `Offer`, `GameConfig`, `LaunchConfig`, V4; player `game.js` |
+| Config | `offer_accept_ms` and `payment_resolution_ms` added; validator fixes the four launch timing values; A01 shows them read-only («۱۰ / ۱۲٫۵» and «۱۰ / ۱۵» ثانیه). At start-up an active version without them is copied once with the launch timing (audited `system:migration`); runs keep their pinned version | `AdminService.migrateTiming`, `ConfigValidator`, admin `app.js` |
+| Lifecycle | One operation per question / offer; one key = one operation (unique per user+key, reuse elsewhere → 422, nothing created); skip/leave/new start refused while a purchase is admitted; client keeps an in-flight purchase pending through run reads, treats `REQUEST_IN_PROGRESS` as "still checking", re-sends the same key while it could still arrive, then reads the run; stale responses ignored by generation | `JdbcIdempotencyRepository`, V4 index, `game.js` |
+| Wallet balance | Shown only in the extra-life purchase sheet (G05/G06) | `views.js` |
+| Record | Removed from gameplay and the End Screen (still on the start screen; the API still returns it) | `views.js` |
+| Dark mode | Removed: player renders light only (`color-scheme: only light`, no dark tokens, host theme ignored). The spotlight dim stays | `tokens.css`, `ds.css`, `main.js`, `host.js`, HTML |
+| Start screen | Intro «دو تا کالا رو ببین، قیمت رو حدس بزن و جواب بده!»; «راهنمای بازی» opens the visual guide | `views.js` |
+| Onboarding | Mandatory on first entry, 7-step spotlight tour on a safe demo (two drawn demo products, no server call, no catalog product); no skip in one action; finished state saved on the account (`POST /player/onboarding`, retried once); entry order onboarding → daily reward → start, never stacked | `game.js` (TOUR), `demo.js` |
+| Daily reward | Modal «جایزه‌ی روزانه»: streak count, last 7 days attended, amount, «دریافت کن». The streak reward earned by the day's first finished run waits as `CLAIMABLE`; the claim is idempotent across taps, retries and devices; states claimable / processing / claimed / delayed. The streak appears nowhere else (start, End Screen, share) | `DailyRewardService`, `PlayerApi`, V4, `views.js` |
+| Gameplay HUD | No «کالای مرجع» / «کالای دوم» labels; count only (with a screen-reader sentence); timer white → orange → red in the last 3 s on a dark plate; processing state after an answer; one continuous progress bar with flags at the checkpoints and ∞ after the last | `views.js`, `app.css` |
+| Checkpoint | Duplicate celebration fixed at the root (see below); one cartoon character per checkpoint; copy «[نام] رو گرفتی.», «هدف بعدی: [نام] با [تعداد] جواب درست»; «[مقدار] تا دیجی‌کوین دریافت کردی.» only after a confirmed grant (End Screen), «پاداش فعلی… واریز در پایان دست» during the run | `game.js` (`openCp`), `characters.js`, `views.js` |
+| End Screen | No record, settlement ticks, play-again or bottom share; icon share at the physical top-right, Back at the top-left → start screen (no run, no payment); horizontal product history, chronological, with question ids, the losing card in view, timeout shown as «وقت تموم شد», scroll position preserved across re-renders | `views.js`, `game.js`, `QueryService` |
+| Difficulty | Audited: R-41, `LaunchConfig` and A04 agree; no change. New tests for bands, reveal-time choice, pinned snapshot, import filtering, fallback, directions and performance | `DifficultyCurveIT`, `DifficultyPerformanceIT` |
+
+**Duplicate checkpoint celebration — cause and fix.** The overlay was rendered as part of the screen markup, and every `render()` rebuilds the screen: the checkpoint guard timer's own render at 1.2 s (and any toast, image load or reconnect) recreated the overlay and replayed its entrance animation. Fix: the overlay is mounted once per checkpoint into a separate host (`.pe-cphost`) outside the re-rendered screen host, guarded by a per-run "shown" set, and removed only when it closes. Probe: before, 2 mounts and 4 entrance animations per checkpoint; after, 1 mount and 2 (card + character). `qa/lifecycle.py cp_once` keeps it fixed.
+
+**Conflicts and choices to confirm (implemented as described, labelled proposed):**
+- *Checkpoint copy vs payout rule.* The brief says «دریافت کردی» only after a confirmed grant; checkpoint rewards are paid at the end of the run (highest only, R-17). So the in-run celebration keeps the approved «پاداش فعلی: X دیجی‌کوین / واریز در پایان دست», and «X تا دیجی‌کوین دریافت کردی.» appears on the End Screen once the credit is confirmed. Paying per checkpoint during the run would change the reward rule, so it was not done.
+- *When the daily reward is earned.* "Attended" = a finished run that day (the existing streak rule; opening the game is not attendance). The reward appears after the day's first finished run and is claimable from then on (also when returning to the start screen from the End Screen).
+- *`payment_resolution_ms` = 60,000* (how long an admitted purchase may wait for the charge result after the 15 s arrival deadline). Proposed; valid range 10,000–600,000.
+- *`timeout_grace_ms` = 1,000* (unchanged): the sweep writes a timeout at arrival deadline + 1 s, stamped at the deadline.
+- *Visible zero of the offer:* the buy button locks and the sheet shows «زمان پیشنهاد تموم شد» with «دیدن نتیجه»; the server ends the offer at 15 s (+ grace). A purchase sent just before the visible zero shows «در حال بررسی…» until the server answers.
+- *Back placement on the End Screen:* the brief places share at the physical top-right; Back went to the top-left.
+- *Characters* are hand-authored inline SVG in one family (not generated, not official Digikala art; R-26).
+- *Design sizes:* screenshots were taken at 360×640, 390×844 and 430×932 as the brief asks (R-32 had fixed 375×812).
+- *QA catalog:* a 150-product subset with local images (the full image folder is on the owner's computer).
 
 ## Proposed values (implemented, labelled, awaiting approval or tuning)
 
@@ -39,6 +71,7 @@
 - **Quota screen:** at the reset instant the player asks the server again (every 2 s, at most 5 times) instead of trusting the local countdown.
 - **Idempotency lease:** 30 s for player requests, 15 min for admin writes (game-off finishes every active run). A retry after the lease takes the key over (recovery after a crash). Rows written by an older instance without a lease age from their creation time.
 - **A01 switches:** a run follows the switches of the configuration version it started with, like every other setting. Turning the streak switch off hides the streak card, row and share line and pays no streak reward; the server still counts streak days in the background (**unresolved:** should counting pause while the switch is off?).
+- **Daily reward:** `processing` for up to 2 minutes after a claim, then `delayed` while the credit is unconfirmed; the claimed credit retries for 72 h like other credits. Abuse signal `share_after_visible_window`: share of answers arriving after the 10 s visible window (information only).
 - **Motion durations** (`player/src/durations.js`): correct hold 1,300 ms, miss hold 1,700, promotion 540, shrink 340, checkpoint guard 1,200.
 - **Rate limits:** start 10 per minute per user, polling 4 per second per run. Idempotency retention 24 h. Coin call timeout 2 s. A reward is shown as "delayed" after 10 s pending.
 - **Risk signals** (A05, information only, R-60): share of answers under 600 ms; median under 0.9 s. These thresholds are proposals.
@@ -57,6 +90,7 @@
    - catalog price-change threshold;
    - CP-20 approved copy;
    - the offer-activation wait.
+   - `payment_resolution_ms` (60 s proposed) and the daily-reward timing above (brief 2026-10-20).
 7. **Live catalog ingestion:** depends on access to the Digikala product API from the deployment network.
 
 None of these block the playable path in development. Each is isolated behind a port or a configuration value.

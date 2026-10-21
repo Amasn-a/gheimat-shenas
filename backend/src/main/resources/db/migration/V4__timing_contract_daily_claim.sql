@@ -10,7 +10,7 @@ ALTER TABLE pe_offer ADD COLUMN purchase_received_at TIMESTAMPTZ;
 
 -- Published configuration versions are immutable; the two new timing fields are added with the values those versions
 -- effectively had (purchase arrival deadline = visible window; no wait after it), so runs pinned to them keep behaving
--- as before. The startup step AdminService.ensureTimingContract publishes a new version with the 2026-10-20 values.
+-- as before. The startup step AdminService.ensureLaunchConfig (migrateTiming) publishes a new version with the 2026-10-20 values.
 UPDATE pe_config_version
 SET payload = payload || jsonb_build_object('offer_accept_ms', (payload->>'offer_ms')::bigint, 'payment_resolution_ms', 0)
 WHERE NOT payload ? 'offer_accept_ms';

@@ -308,7 +308,12 @@ public final class RunService {
             if (offer.state == OfferState.PAYMENT_PENDING || offer.state == OfferState.GRANTED || offer.operationId != null && offer.state == OfferState.ENDED_UNCONFIRMED)
                 return Result.ok(offer.operationId);                         // one live operation per offer: retries and other keys get it
             if (run.isFinished()) {
-                if (offer.state == OfferState.EXPIRED) return Result.error(stateError("OFFER_EXPIRED", run, l.player, caller));
+                if (offer.state == OfferState.EXPIRED) {
+                    if (offer.admits(receivedAt))                            // on time, but its receipt lost the race: grace too short
+                        ctx.ledger().alert("ON_TIME_PURCHASE_EXPIRED", "late-purchase:" + offer.offerId,
+                                "{\"offer_id\":\"" + offer.offerId + "\",\"received_at\":\"" + receivedAt + "\"}", now);
+                    return Result.error(stateError("OFFER_EXPIRED", run, l.player, caller));
+                }
                 return Result.error(finishedError(run, l.player, caller));
             }
             requireDevice(run, caller, l.player);
@@ -351,6 +356,7 @@ public final class RunService {
             if (run.isFinished()) return Result.ok(views.run(run, l.player.record, caller.deviceId()));
             requireDevice(run, caller, l.player);
             if (run.state == RunState.PAYMENT_PENDING || run.state == RunState.OFFER_OPEN && ctx.runs().latestOfferOfRun(run.runId)
+                    .flatMap(o -> ctx.runs().lockOffer(o.offerId))              // locked: serialised with a receipt being recorded
                     .map(o -> o.purchaseReceivedAt != null).orElse(false))      // back is blocked while a purchase is processed
                 return Result.error(stateError("OPERATION_PENDING", run, l.player, caller));
             FinishReason reason = (run.state == RunState.OFFER_OPEN || run.state == RunState.AWAITING_OFFER) ? FinishReason.skipped : FinishReason.left;
